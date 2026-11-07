@@ -106,9 +106,76 @@ full two hours.
 | ADPCM | 32 kbit/s | 20 ms | | | 8 kHz, speech only |
 | ADPCM | 64 kbit/s | 20 ms | | | 16 kHz |
 
+Run the latency row once more with phone B on its **built-in microphone** rather
+than app audio. The capture path is different and may add its own buffering, so
+the app-audio figure cannot be assumed to carry over.
+
 ADPCM is fixed at 4 bits per sample, so its bitrate setting changes the sample
 rate rather than the quantisation. That is why its rows are not comparable with
 Opus at the same number.
+
+## Two-microphone check
+
+This is the case where the platform is most likely to take something away, so it
+gets its own pass. Phone A's headset must be connected throughout.
+
+### Each phone on its own microphone
+
+1. Phone B: *What to send* → **Built-in mic**, **Start sending**. No capture
+   consent is needed, so this also isolates the microphone path from
+   MediaProjection.
+2. Phone A: turn on **Use the built-in microphone as the local source**.
+3. Mode **Hard Split**: one phone's microphone should arrive in each ear. Speak
+   into each phone in turn and confirm which ear it lands in.
+4. Mode **Mixed Stereo**: both in both ears.
+
+Record for each phone:
+
+| Check | Where to look |
+|---|---|
+| Status is `Built-in microphone`, not `Recording from the wrong input` | main screen |
+| The headset is still `Headset connected (A2DP)` and still sounds like a stereo sink | main screen, and by ear |
+| No notice about the hands-free profile appeared | main screen |
+| Both microphones work **at the same time** | by ear |
+
+The fourth row is the point of the exercise. If one phone's microphone goes
+silent the moment the other starts, the input was not pinned to the built-in
+device on one of them — check the log ring for the route it reported.
+
+A headset that visibly switches to hands-free (the characteristic drop to narrow
+band, or the headset announcing a call) means the pinning failed. Record the
+phone model: that is a platform behaviour worth knowing about.
+
+### Combined app audio and microphone
+
+On phone B select **App audio + mic** and grant the capture consent.
+
+- Both halves should be audible in the headset simultaneously.
+- Mute or stop the player on phone B: the microphone must keep going, and the
+  status must not claim more than is true.
+- Start a voice recorder or a call-screening app on phone B, which takes the
+  input: the status should turn to *Muted by Android* within a second or two.
+  This is the case the policy monitor exists for — the recorder keeps delivering
+  frames, they are simply zeros, so without the monitor the app would show a
+  healthy stream.
+
+### Microphone contention and recovery
+
+| Event | Expected |
+|---|---|
+| Another app records on phone B | status `Muted by Android`, recovers when that app stops |
+| Another app records on phone A | notice about the muted microphone |
+| Plug in a wired headset on either phone | route warning, or recording stays on the built-in mic |
+| Phone call on either phone | capture stops; it must not come back silently |
+| Headset disconnected and reconnected while both mics run | audio follows the route, no stale burst |
+
+### Feedback
+
+With phone A's microphone mixed into the headset it is also feeding, howl-round
+is expected at close range. Record the distance at which it starts, with echo
+processing on and off (Settings → Microphone), and whether the automatic gain
+control makes it worse. This is acoustics, not a bug, but the usable distance is
+worth writing down.
 
 ## Coexistence check (section 7)
 

@@ -11,16 +11,22 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import androidx.core.content.ContextCompat
+import android.media.AudioManager
 import com.dualstream.uniter.audio.CaptureSource
 import com.dualstream.uniter.audio.DirectPcmInput
+import com.dualstream.uniter.audio.InputRoutePolicy
+import com.dualstream.uniter.audio.MicCaptureSource
+import com.dualstream.uniter.audio.MixCaptureSource
 import com.dualstream.uniter.audio.Pcm
 import com.dualstream.uniter.audio.PlaybackCaptureSource
+import com.dualstream.uniter.audio.RecordingPolicyMonitor
 import com.dualstream.uniter.audio.Resampler
 import com.dualstream.uniter.audio.ToneSource
 import com.dualstream.uniter.codec.AudioEncoder
 import com.dualstream.uniter.codec.CodecFactory
 import com.dualstream.uniter.core.AppState
 import com.dualstream.uniter.core.CaptureState
+import com.dualstream.uniter.core.InputSource
 import com.dualstream.uniter.core.LinkState
 import com.dualstream.uniter.core.Logx
 import com.dualstream.uniter.core.Prefs
@@ -62,7 +68,16 @@ class TransmitterService : Service() {
     @Volatile private var capture: CaptureSource? = null
     @Volatile private var encoder: AudioEncoder? = null
     @Volatile private var peerAddress: String? = null
-    @Volatile private var useTestTone = false
+    @Volatile private var inputSource: InputSource = InputSource.PLAYBACK_CAPTURE
+
+    private var audioManager: AudioManager? = null
+    private var policyMonitor: RecordingPolicyMonitor? = null
+
+    /** Set by the policy monitor when Android mutes our recorder. */
+    @Volatile private var recorderSilencedByPolicy = false
+
+    /** Non-null only while the "app audio + microphone" source is running. */
+    @Volatile private var mixSource: MixCaptureSource? = null
 
     /** Set by the receiver through a CONFIG frame; applied on the next restart. */
     @Volatile private var requestedBitrate: Int? = null
@@ -77,6 +92,7 @@ class TransmitterService : Service() {
         Logx.verbose = prefs.verboseLog
         NotificationHelper.ensureChannels(this)
         discovery = BtDiscovery(this)
+        audioManager = ContextCompat.getSystemService(this, AudioManager::class.java)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -102,11 +118,15 @@ class TransmitterService : Service() {
             }
         }
 
-        // Foreground promotion must happen before MediaProjection is obtained,
-        // otherwise Android 14+ rejects getMediaProjection().
-        promoteToForeground("Starting…")
+        // Claim the minimum type first: a service started with
+        // startForegroundService has to go foreground promptly, but the full set
+        // of types is only known once the input source has been resolved.
+        promote("Starting…", ForegroundTypes.connectedDevice())
 
-        useTestTone = intent?.getBooleanExtra(ServiceContract.EXTRA_USE_TEST_TONE, false) == true
+        inputSource = intent?.getStringExtra(ServiceContract.EXTRA_INPUT_SOURCE)
+            ?.let { name -> runCatching { InputSource.valueOf(name) }.getOrNull() }
+            ?: prefs.inputSource
+
         peerAddress = intent?.getStringExtra(ServiceContract.EXTRA_PEER_ADDRESS)
             ?: prefs.trustedPeerAddress
 
@@ -117,7 +137,30 @@ class TransmitterService : Service() {
             return START_NOT_STICKY
         }
 
-        if (!useTestTone) {
+        if (inputSource.needsMic && !hasRecordAudio()) {
+            AppState.setCapture(CaptureState.UNAVAILABLE)
+            AppState.notice("Microphone permission is required to send this phone's microphone.")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        // Now claim exactly what this session uses. Claiming mediaProjection
+        // without a projection is refused on Android 14, so a microphone-only or
+        // test-tone session must not ask for it.
+        var types = ForegroundTypes.connectedDevice()
+        if (inputSource.needsProjection) types = types or ForegroundTypes.mediaProjection()
+        if (inputSource.needsMic) types = types or ForegroundTypes.microphone()
+        if (!promote("Starting…", types)) {
+            AppState.setCapture(CaptureState.UNAVAILABLE)
+            AppState.notice(
+                "Android refused this foreground service. Capture consent may have expired; " +
+                    "start sending again."
+            )
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        if (inputSource.needsProjection) {
             val code = intent?.getIntExtra(ServiceContract.EXTRA_RESULT_CODE, 0) ?: 0
             @Suppress("DEPRECATION")
             val data: Intent? = intent?.getParcelableExtra(ServiceContract.EXTRA_RESULT_DATA)
@@ -138,12 +181,14 @@ class TransmitterService : Service() {
         return START_STICKY
     }
 
+    private fun hasRecordAudio(): Boolean =
+        ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+
     // ---------------------------------------------------------------- lifecycle
 
     private fun acquireProjection(resultCode: Int, data: Intent): Boolean {
-        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
+        if (!hasRecordAudio()) {
             AppState.setCapture(CaptureState.UNAVAILABLE)
             AppState.notice("Microphone permission is required: Android gates playback capture behind it.")
             return false
@@ -196,6 +241,7 @@ class TransmitterService : Service() {
         readerThread?.interrupt()
         readerThread = null
         stopCaptureAndEncoder()
+        policyMonitor = null
         projectionCallback?.let { cb -> runCatching { projection?.unregisterCallback(cb) } }
         projectionCallback = null
         runCatching { projection?.stop() }
@@ -340,41 +386,144 @@ class TransmitterService : Service() {
     }
 
     private fun startCapture(frameMs: Int): CaptureSource? {
-        if (useTestTone) {
-            // Stage 1 of the plan: prove the RFCOMM path with a synthetic signal
-            // through the direct PCM input, no MediaProjection involved.
-            val input = DirectPcmInput(Pcm.OUT_RATE)
-            input.start()
-            val tone = ToneSource(frequency = 660.0)
-            val frameSamples = Pcm.OUT_RATE * frameMs / 1000
-            Thread({
-                val buf = ShortArray(frameSamples)
-                while (running.get()) {
-                    tone.read(buf)
-                    input.offer(buf.copyOf())
-                    sleepQuietly(frameMs.toLong())
-                }
-            }, "dualstream-tone").apply { isDaemon = true }.start()
-            capture = input
-            AppState.setCapture(CaptureState.DIRECT_PCM)
-            return input
+        val frameSamples = Pcm.OUT_RATE * frameMs / 1000
+        val src: CaptureSource? = when (inputSource) {
+            InputSource.TEST_TONE -> startTone(frameMs, frameSamples)
+            InputSource.BUILTIN_MIC -> startMic(frameSamples)
+            InputSource.PLAYBACK_CAPTURE -> startPlaybackCapture(frameSamples)
+            InputSource.PLAYBACK_AND_MIC -> startPlaybackAndMic(frameSamples)
         }
+        capture = src
+        return src
+    }
 
+    private fun startTone(frameMs: Int, frameSamples: Int): CaptureSource {
+        // Stage 1 of the plan: prove the RFCOMM path with a synthetic signal
+        // through the direct PCM input, no MediaProjection and no microphone.
+        val input = DirectPcmInput(Pcm.OUT_RATE)
+        input.start()
+        val tone = ToneSource(frequency = 660.0)
+        Thread({
+            val buf = ShortArray(frameSamples)
+            while (running.get()) {
+                tone.read(buf)
+                input.offer(buf.copyOf())
+                sleepQuietly(frameMs.toLong())
+            }
+        }, "dualstream-tone").apply { isDaemon = true }.start()
+        AppState.setCapture(CaptureState.DIRECT_PCM)
+        return input
+    }
+
+    private fun newMic(frameSamples: Int): MicCaptureSource = MicCaptureSource(
+        audioManager = audioManager,
+        sampleRate = Pcm.OUT_RATE,
+        frameSamples = frameSamples,
+        enableProcessing = prefs.micProcessing,
+        gain = prefs.micGain
+    )
+
+    private fun startMic(frameSamples: Int): CaptureSource? {
+        val mic = newMic(frameSamples)
+        if (!mic.start()) {
+            AppState.setCapture(CaptureState.UNAVAILABLE)
+            AppState.notice("The microphone could not be opened. Another app may be holding it.")
+            return null
+        }
+        watchRecordingPolicy(mic.sessionId)
+        reportMicRoute(mic)
+        AppState.setCapture(CaptureState.MIC)
+        return mic
+    }
+
+    private fun startPlaybackCapture(frameSamples: Int): CaptureSource? {
         val mp = projection
         if (mp == null) {
             AppState.setCapture(CaptureState.NEEDS_CONSENT)
             return null
         }
-        val frameSamples = 48_000 * frameMs / 1000
-        val src = PlaybackCaptureSource(mp, 48_000, frameSamples)
+        val src = PlaybackCaptureSource(mp, Pcm.OUT_RATE, frameSamples)
         if (!src.start()) {
             AppState.setCapture(CaptureState.UNAVAILABLE)
             AppState.notice("Playback capture could not be started on this device.")
             return null
         }
-        capture = src
         AppState.setCapture(CaptureState.CAPTURING_SILENCE)   // until proven otherwise
         return src
+    }
+
+    private fun startPlaybackAndMic(frameSamples: Int): CaptureSource? {
+        val mp = projection
+        if (mp == null) {
+            AppState.setCapture(CaptureState.NEEDS_CONSENT)
+            return null
+        }
+        val playback = PlaybackCaptureSource(mp, Pcm.OUT_RATE, frameSamples)
+        val mic = newMic(frameSamples)
+        val mix = MixCaptureSource(
+            primary = playback,
+            secondary = mic,
+            frameSamples = frameSamples,
+            secondaryGain = 1f
+        )
+        if (!mix.start()) {
+            AppState.setCapture(CaptureState.UNAVAILABLE)
+            AppState.notice("Neither playback capture nor the microphone could be started.")
+            return null
+        }
+        if (mix.secondaryFailed) {
+            AppState.notice(
+                "The microphone could not be added, so only app audio is being sent. " +
+                    "Another app may be holding the microphone."
+            )
+        } else {
+            watchRecordingPolicy(mic.sessionId)
+            reportMicRoute(mic)
+        }
+        mixSource = mix
+        AppState.setCapture(CaptureState.CAPTURING_SILENCE)
+        return mix
+    }
+
+    private fun reportMicRoute(mic: MicCaptureSource) {
+        val problem = mic.routeProblem
+        if (problem != null) {
+            AppState.setCapture(CaptureState.WRONG_INPUT_ROUTE)
+            AppState.notice(problem)
+        } else {
+            val type = mic.routedType
+            Logx.i(
+                "tx",
+                "microphone on " + (type?.let { InputRoutePolicy.describe(it) } ?: "an unknown input")
+            )
+        }
+    }
+
+    /**
+     * Android can mute a recorder without failing a single read, so the policy
+     * callback is the only way to tell a silenced microphone from a quiet room.
+     */
+    private fun watchRecordingPolicy(sessionId: Int) {
+        recorderSilencedByPolicy = false
+        val monitor = policyMonitor ?: RecordingPolicyMonitor(audioManager) { report ->
+            recorderSilencedByPolicy = report.silenced
+            if (report.silenced) {
+                AppState.setCapture(CaptureState.SILENCED_BY_POLICY)
+                AppState.notice(
+                    "Android has muted this phone's microphone for us: another app took the " +
+                        "input, or this app lost its microphone claim. Nothing audible is being sent."
+                )
+            } else {
+                val type = report.routedType
+                if (type != null) {
+                    InputRoutePolicy.rejectionReason(type)?.let { reason ->
+                        AppState.setCapture(CaptureState.WRONG_INPUT_ROUTE)
+                        AppState.notice(reason)
+                    }
+                }
+            }
+        }.also { policyMonitor = it }
+        monitor.start(sessionId)
     }
 
     /**
@@ -393,6 +542,7 @@ class TransmitterService : Service() {
         var audibleRun = 0
         var lastStateSent = CaptureState.IDLE
         var framesSinceMeter = 0
+        var micSilentRun = 0
 
         AppState.setTransmitting(true)
         updateNotification("Sending audio to ${link.remoteName}")
@@ -410,10 +560,11 @@ class TransmitterService : Service() {
             }
             if (n == 0) continue
 
-            // Silence bookkeeping. Android hands back digital silence when the
-            // playing app forbids capture, and the specification forbids showing
-            // that as a working stream.
-            val silent = com.dualstream.uniter.audio.Pcm.isSilent(inBuf, 0, n)
+            // Silence bookkeeping. Android hands back digital silence both when
+            // the playing app forbids capture and when the audio policy mutes our
+            // recorder, and the specification forbids showing either as a working
+            // stream.
+            val silent = Pcm.isSilent(inBuf, 0, n)
             if (silent) {
                 silentRun++
                 audibleRun = 0
@@ -421,12 +572,7 @@ class TransmitterService : Service() {
                 audibleRun++
                 silentRun = 0
             }
-            val state = when {
-                src is DirectPcmInput -> CaptureState.DIRECT_PCM
-                audibleRun >= 2 -> CaptureState.CAPTURING
-                silentRun > SILENCE_FRAMES -> CaptureState.CAPTURING_SILENCE
-                else -> lastStateSent
-            }
+            val state = classify(src, silentRun, audibleRun, lastStateSent)
             if (state != lastStateSent && state != CaptureState.IDLE) {
                 lastStateSent = state
                 AppState.setCapture(state)
@@ -473,10 +619,47 @@ class TransmitterService : Service() {
 
             if (++framesSinceMeter >= METER_EVERY) {
                 framesSinceMeter = 0
-                val level = com.dualstream.uniter.audio.Pcm.rms(inBuf, 0, n)
+                val level = Pcm.rms(inBuf, 0, n)
                 AppState.updateStats { it.copy(localLevel = level) }
             }
+
+            // In the combined source the sum can be audible while the microphone
+            // half is dead, so each side is checked on its own.
+            mixSource?.let { mix ->
+                if (mix.secondarySilent) micSilentRun++ else micSilentRun = 0
+                if (micSilentRun == MIC_SILENT_WARN_FRAMES) {
+                    AppState.notice(
+                        if (mix.secondaryFailed)
+                            "The microphone half of the stream has stopped; only app audio is going out."
+                        else
+                            "App audio is going out, but the microphone has been silent for a while. " +
+                                "Check that nothing else holds it."
+                    )
+                }
+            }
         }
+    }
+
+    /**
+     * Maps the capture situation onto a reportable state. The order matters: a
+     * recorder muted by the audio policy keeps delivering frames on schedule,
+     * so that case has to win over any "we received audio" reasoning.
+     */
+    private fun classify(
+        src: CaptureSource,
+        silentRun: Int,
+        audibleRun: Int,
+        last: CaptureState
+    ): CaptureState = when {
+        recorderSilencedByPolicy -> CaptureState.SILENCED_BY_POLICY
+        src is DirectPcmInput -> CaptureState.DIRECT_PCM
+        audibleRun >= 2 -> when (inputSource) {
+            InputSource.BUILTIN_MIC -> CaptureState.MIC
+            InputSource.PLAYBACK_AND_MIC -> CaptureState.MIC_AND_PLAYBACK
+            else -> CaptureState.CAPTURING
+        }
+        silentRun > SILENCE_FRAMES -> CaptureState.CAPTURING_SILENCE
+        else -> last
     }
 
     private fun sendAudio(link: BtLink, packet: ByteArray, silent: Boolean) {
@@ -539,6 +722,9 @@ class TransmitterService : Service() {
     // ------------------------------------------------------------------ helpers
 
     private fun stopCaptureAndEncoder() {
+        policyMonitor?.stop()
+        recorderSilencedByPolicy = false
+        mixSource = null
         capture?.let { runCatching { it.stop() } }
         capture = null
         encoder?.let { runCatching { it.release() } }
@@ -567,15 +753,15 @@ class TransmitterService : Service() {
         wakeLock = null
     }
 
-    private fun promoteToForeground(text: String) {
-        startForeground(
-            NotificationHelper.ID_TRANSMITTER,
-            NotificationHelper.build(
-                this, NotificationHelper.CHANNEL_TRANSMITTER,
-                "DualStream transmitter", text, TransmitterService::class.java
-            )
-        )
-    }
+    private fun promote(text: String, types: Int): Boolean = ForegroundTypes.promote(
+        this,
+        NotificationHelper.ID_TRANSMITTER,
+        NotificationHelper.build(
+            this, NotificationHelper.CHANNEL_TRANSMITTER,
+            "DualStream transmitter", text, TransmitterService::class.java
+        ),
+        types
+    )
 
     private fun updateNotification(text: String) {
         NotificationHelper.update(
@@ -599,28 +785,38 @@ class TransmitterService : Service() {
         /** ~1 s of silence at 20 ms frames before we call the stream silent. */
         private const val SILENCE_FRAMES = 50
         private const val METER_EVERY = 5
+
+        /** ~4 s at 20 ms frames before we point out a dead microphone half. */
+        private const val MIC_SILENT_WARN_FRAMES = 200
         private const val WAKELOCK_TIMEOUT_MS = 4L * 60 * 60 * 1000
 
-        fun start(
+        /** Starts a source that needs MediaProjection consent. */
+        fun startWithProjection(
             context: Context,
             peerAddress: String,
+            source: InputSource,
             resultCode: Int,
             resultData: Intent?
         ) {
             val i = Intent(context, TransmitterService::class.java)
                 .setAction(ServiceContract.ACTION_START)
                 .putExtra(ServiceContract.EXTRA_PEER_ADDRESS, peerAddress)
+                .putExtra(ServiceContract.EXTRA_INPUT_SOURCE, source.name)
                 .putExtra(ServiceContract.EXTRA_RESULT_CODE, resultCode)
                 .putExtra(ServiceContract.EXTRA_RESULT_DATA, resultData)
             ContextCompat.startForegroundService(context, i)
         }
 
-        /** Stage 1 bring-up: send a test tone, no MediaProjection consent needed. */
-        fun startTestTone(context: Context, peerAddress: String) {
+        /**
+         * Starts a source that needs no projection: the built-in microphone, or
+         * the Stage 1 test tone.
+         */
+        fun startWithoutProjection(context: Context, peerAddress: String, source: InputSource) {
+            require(!source.needsProjection) { "$source needs MediaProjection consent" }
             val i = Intent(context, TransmitterService::class.java)
                 .setAction(ServiceContract.ACTION_START)
                 .putExtra(ServiceContract.EXTRA_PEER_ADDRESS, peerAddress)
-                .putExtra(ServiceContract.EXTRA_USE_TEST_TONE, true)
+                .putExtra(ServiceContract.EXTRA_INPUT_SOURCE, source.name)
             ContextCompat.startForegroundService(context, i)
         }
 

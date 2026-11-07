@@ -13,9 +13,12 @@ import androidx.core.content.ContextCompat
 import com.dualstream.uniter.audio.AudioOutput
 import com.dualstream.uniter.audio.FileLocalSource
 import com.dualstream.uniter.audio.FrameAssembler
+import com.dualstream.uniter.audio.InputRoutePolicy
 import com.dualstream.uniter.audio.LocalAudioSource
+import com.dualstream.uniter.audio.MicLocalSource
 import com.dualstream.uniter.audio.Pcm
 import com.dualstream.uniter.audio.PlaybackEngine
+import com.dualstream.uniter.audio.RecordingPolicyMonitor
 import com.dualstream.uniter.audio.Resampler
 import com.dualstream.uniter.audio.SilentSource
 import com.dualstream.uniter.audio.ToneSource
@@ -27,6 +30,7 @@ import com.dualstream.uniter.core.CaptureState
 import com.dualstream.uniter.core.HeadsetState
 import com.dualstream.uniter.core.LinkState
 import com.dualstream.uniter.core.Logx
+import com.dualstream.uniter.core.MixMode
 import com.dualstream.uniter.core.Prefs
 import com.dualstream.uniter.protocol.AudioPayload
 import com.dualstream.uniter.protocol.CodecInit
@@ -70,6 +74,13 @@ class ReceiverService : Service() {
     private var audioManager: AudioManager? = null
     private var deviceCallback: AudioDeviceCallback? = null
 
+    /** Non-null while this phone's own microphone is the local mixer source. */
+    @Volatile private var micLocal: MicLocalSource? = null
+    private var policyMonitor: RecordingPolicyMonitor? = null
+
+    /** The mic-as-local-source setting the running engine was built with. */
+    private var micLocalActive = false
+
     /** Underruns at the start of the current coexistence observation window. */
     private var windowUnderruns = 0L
     private var windowStartMs = 0L
@@ -110,7 +121,7 @@ class ReceiverService : Service() {
     // ---------------------------------------------------------------- lifecycle
 
     private fun startEverything() {
-        promoteToForeground("Waiting for phone B")
+        promote("Waiting for phone B")
         if (running.getAndSet(true)) {
             applySettings()
             return
@@ -157,6 +168,10 @@ class ReceiverService : Service() {
         keepaliveThread = null
         engine?.stop()
         engine = null
+        policyMonitor?.stop()
+        policyMonitor = null
+        micLocal = null
+        micLocalActive = false
         unregisterHeadsetCallback()
         releaseWakeLock()
         AppState.reset()
@@ -178,6 +193,19 @@ class ReceiverService : Service() {
         eng.remoteVolume = prefs.remoteVolume
         eng.balance = prefs.balance
         eng.duckDepth = prefs.duckDepth
+
+        micLocal?.gain = prefs.micGain
+
+        // Switching the local source between a file and the microphone changes
+        // which foreground types this service needs, so rebuild both together.
+        if (prefs.micAsLocalSource != micLocalActive) {
+            policyMonitor?.stop()
+            micLocal = null
+            promote(if (prefs.micAsLocalSource) "Microphone + phone B" else "Receiver running")
+            eng.setLocalSource(buildLocalSource())
+        } else {
+            warnAboutFeedbackIfNeeded()
+        }
         Logx.d("receiver", "settings applied: mode=${prefs.mixMode} local=${prefs.localVolume} remote=${prefs.remoteVolume}")
     }
 
@@ -187,6 +215,36 @@ class ReceiverService : Service() {
      * selected file or the built-in test tone.
      */
     private fun buildLocalSource(): LocalAudioSource {
+        micLocal = null
+        micLocalActive = prefs.micAsLocalSource
+
+        if (prefs.micAsLocalSource) {
+            if (!hasRecordAudio()) {
+                AppState.notice("Microphone permission is required to use this phone's microphone.")
+                micLocalActive = false
+                return SilentSource
+            }
+            val frameSamples = Pcm.OUT_RATE * prefs.frameMs / 1000
+            val mic = MicLocalSource(
+                audioManager = audioManager,
+                frameSamples = frameSamples,
+                gain = prefs.micGain,
+                processing = prefs.micProcessing
+            )
+            if (mic.start()) {
+                micLocal = mic
+                watchRecordingPolicy(mic.sessionId)
+                mic.routeProblem?.let { AppState.notice(it) }
+                warnAboutFeedbackIfNeeded()
+                Logx.i("receiver", "local source is this phone's microphone")
+                return mic
+            }
+            Logx.w("receiver", "local microphone could not start")
+            AppState.notice("This phone's microphone could not be opened. Another app may hold it.")
+            micLocalActive = false
+            return SilentSource
+        }
+
         val uri = prefs.localSourceUri
         if (uri.isNullOrBlank()) return SilentSource
         if (uri == LOCAL_TONE) return ToneSource()
@@ -197,6 +255,39 @@ class ReceiverService : Service() {
             AppState.notice("The selected local track could not be decoded.")
             SilentSource
         }
+    }
+
+    /**
+     * This phone's microphone sitting next to a headset playing the same mix is
+     * an acoustic loop. The platform echo canceller helps, but it is tuned for
+     * handset playback, not for leakage out of someone else's earpiece, so the
+     * honest thing is to say it out loud.
+     */
+    private fun warnAboutFeedbackIfNeeded() {
+        if (!micLocalActive) return
+        if (prefs.mixMode == MixMode.REMOTE_ONLY) return
+        val a2dp = audioManager?.let { AudioOutput.isA2dpActive(it) } == true
+        if (!a2dp) return
+        AppState.notice(
+            "This phone's microphone is mixed into the headset it is also feeding. Keep the " +
+                "headset away from the phone, or howl-round is likely."
+        )
+    }
+
+    private fun watchRecordingPolicy(sessionId: Int) {
+        val monitor = policyMonitor ?: RecordingPolicyMonitor(audioManager) { report ->
+            if (report.silenced) {
+                AppState.notice(
+                    "Android has muted this phone's microphone for us: another app took the " +
+                        "input, or this app lost its microphone claim."
+                )
+            } else {
+                report.routedType?.let { type ->
+                    InputRoutePolicy.rejectionReason(type)?.let { AppState.notice(it) }
+                }
+            }
+        }.also { policyMonitor = it }
+        monitor.start(sessionId)
     }
 
     // ------------------------------------------------------------------- accept
@@ -547,15 +638,30 @@ class ReceiverService : Service() {
         wakeLock = null
     }
 
-    private fun promoteToForeground(text: String) {
-        startForeground(
+    /**
+     * Claims exactly the foreground types in use. The microphone type is only
+     * claimed while this phone's own microphone feeds the mixer; claiming types
+     * that are not in use is refused outright on recent Android versions.
+     */
+    private fun promote(text: String): Boolean {
+        var types = ForegroundTypes.mediaPlayback() or ForegroundTypes.connectedDevice()
+        if (prefs.micAsLocalSource && hasRecordAudio()) {
+            types = types or ForegroundTypes.microphone()
+        }
+        return ForegroundTypes.promote(
+            this,
             NotificationHelper.ID_RECEIVER,
             NotificationHelper.build(
                 this, NotificationHelper.CHANNEL_RECEIVER,
                 "DualStream receiver", text, ReceiverService::class.java
-            )
+            ),
+            types
         )
     }
+
+    private fun hasRecordAudio(): Boolean =
+        ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
 
     private fun updateNotification(text: String) {
         NotificationHelper.update(

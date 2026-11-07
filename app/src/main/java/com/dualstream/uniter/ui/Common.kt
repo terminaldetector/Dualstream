@@ -134,6 +134,12 @@ fun captureLabel(state: CaptureState): Pair<String, Color> = when (state) {
         "Running, but the app in the foreground forbids capture" to StatusColors.warn
     CaptureState.UNAVAILABLE -> "Capture unavailable" to StatusColors.bad
     CaptureState.DIRECT_PCM -> "Direct PCM (test signal)" to StatusColors.accent
+    CaptureState.MIC -> "Built-in microphone" to StatusColors.good
+    CaptureState.MIC_AND_PLAYBACK -> "App audio + built-in microphone" to StatusColors.good
+    CaptureState.SILENCED_BY_POLICY ->
+        "Muted by Android: another app holds the microphone" to StatusColors.bad
+    CaptureState.WRONG_INPUT_ROUTE ->
+        "Recording from the wrong input" to StatusColors.bad
 }
 
 fun headsetLabel(state: HeadsetState): Pair<String, Color> = when (state) {

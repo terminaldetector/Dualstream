@@ -5,6 +5,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import com.dualstream.uniter.core.InputSource
 import com.dualstream.uniter.core.Prefs
 import com.dualstream.uniter.transport.BtDiscovery
 
@@ -22,8 +23,7 @@ fun AppNavHost(
     onRequestPermissions: () -> Unit,
     onStartReceiver: () -> Unit,
     onStopReceiver: () -> Unit,
-    onStartTransmitter: (String) -> Unit,
-    onStartTestTone: (String) -> Unit,
+    onStartTransmitter: (String, InputSource) -> Unit,
     onStopTransmitter: () -> Unit,
     onReconnect: () -> Unit,
     onSettingsChanged: () -> Unit,
@@ -39,7 +39,6 @@ fun AppNavHost(
             onStartReceiver = onStartReceiver,
             onStopReceiver = onStopReceiver,
             onStartTransmitter = onStartTransmitter,
-            onStartTestTone = onStartTestTone,
             onStopTransmitter = onStopTransmitter,
             onReconnect = onReconnect,
             onSettingsChanged = onSettingsChanged,

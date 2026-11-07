@@ -14,6 +14,9 @@ object ServiceContract {
     /** Peer MAC address, transmitter only. */
     const val EXTRA_PEER_ADDRESS = "peer_address"
 
-    /** When true the transmitter uses the direct PCM test tone instead of capture. */
-    const val EXTRA_USE_TEST_TONE = "use_test_tone"
+    /**
+     * Name of the [com.dualstream.uniter.core.InputSource] the transmitter
+     * should use. Absent means "whatever is stored in the settings".
+     */
+    const val EXTRA_INPUT_SOURCE = "input_source"
 }

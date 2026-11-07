@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -27,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -34,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dualstream.uniter.core.AppState
 import com.dualstream.uniter.core.CaptureState
+import com.dualstream.uniter.core.InputSource
 import com.dualstream.uniter.core.LinkState
 import com.dualstream.uniter.core.MixMode
 import com.dualstream.uniter.core.Prefs
@@ -51,8 +54,7 @@ fun MainScreen(
     onRequestPermissions: () -> Unit,
     onStartReceiver: () -> Unit,
     onStopReceiver: () -> Unit,
-    onStartTransmitter: (String) -> Unit,
-    onStartTestTone: (String) -> Unit,
+    onStartTransmitter: (String, InputSource) -> Unit,
     onStopTransmitter: () -> Unit,
     onReconnect: () -> Unit,
     onSettingsChanged: () -> Unit,
@@ -74,6 +76,8 @@ fun MainScreen(
     var mode by remember { mutableStateOf(prefs.mixMode) }
     var localVol by remember { mutableStateOf(prefs.localVolume) }
     var remoteVol by remember { mutableStateOf(prefs.remoteVolume) }
+    var inputSource by remember { mutableStateOf(prefs.inputSource) }
+    var micAsLocal by remember { mutableStateOf(prefs.micAsLocalSource) }
 
     val active = receiving || transmitting ||
         link in setOf(LinkState.LISTENING, LinkState.CONNECTING, LinkState.CONNECTED,
@@ -204,8 +208,37 @@ fun MainScreen(
                 }
             }
 
-            // ------------------------------------------------------- mixing
+            // ------------------------------------------------- local source on A
             if (role == Role.RECEIVER) {
+                SectionCard("This phone's microphone") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Use the built-in microphone as the local source",
+                            Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Switch(
+                            checked = micAsLocal,
+                            enabled = permissionsGranted,
+                            onCheckedChange = {
+                                micAsLocal = it
+                                prefs.micAsLocalSource = it
+                                onSettingsChanged()
+                            }
+                        )
+                    }
+                    Box(Modifier.size(6.dp))
+                    Text(
+                        "With phone B sending its own microphone, each phone records its own " +
+                            "hardware. Recording is pinned to the built-in microphone on purpose: " +
+                            "taking the headset's microphone would switch it to hands-free and kill " +
+                            "the A2DP stream, and two phones cannot share one headset microphone — " +
+                            "the system would cut the input on both.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                }
+
                 SectionCard("Playback mode") {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         MixMode.entries.chunked(2).forEach { pair ->
@@ -256,6 +289,35 @@ fun MainScreen(
                 }
             }
 
+            // ------------------------------------------------- source on B
+            if (role == Role.TRANSMITTER) {
+                SectionCard("What to send") {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        InputSource.entries.chunked(2).forEach { pair ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                pair.forEach { src ->
+                                    FilterChip(
+                                        selected = inputSource == src,
+                                        enabled = !active,
+                                        onClick = {
+                                            inputSource = src
+                                            prefs.inputSource = src
+                                        },
+                                        label = { Text(src.label) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Box(Modifier.size(6.dp))
+                    Text(
+                        sourceHint(inputSource),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                }
+            }
+
             // ------------------------------------------------------ controls
             SectionCard("Connection") {
                 val trusted = prefs.trustedPeerName ?: prefs.trustedPeerAddress
@@ -281,27 +343,17 @@ fun MainScreen(
                     val peerAddr = prefs.trustedPeerAddress
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
-                            onClick = { peerAddr?.let(onStartTransmitter) },
+                            onClick = { peerAddr?.let { onStartTransmitter(it, inputSource) } },
                             enabled = permissionsGranted && !active && peerAddr != null
                         ) { Text("Start sending") }
                         OutlinedButton(onClick = onStopTransmitter, enabled = active) { Text("Stop") }
                     }
-                    Box(Modifier.size(6.dp))
-                    OutlinedButton(
-                        onClick = { peerAddr?.let(onStartTestTone) },
-                        enabled = permissionsGranted && !active && peerAddr != null
-                    ) { Text("Send test tone (no capture consent)") }
-                    Box(Modifier.size(6.dp))
-                    Text(
-                        "The test tone is the Stage 1 bring-up path: it proves the RFCOMM link and the " +
-                            "headset output without MediaProjection.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.secondary
-                    )
                 }
             }
 
-            if (capture == CaptureState.CAPTURING_SILENCE) {
+            if (capture == CaptureState.CAPTURING_SILENCE &&
+                inputSource != InputSource.BUILTIN_MIC
+            ) {
                 SectionCard("Why is there no sound?") {
                     Text(
                         "Android only hands over audio from players that allow playback capture. " +
@@ -318,10 +370,29 @@ fun MainScreen(
     }
 }
 
+private fun sourceHint(source: InputSource): String = when (source) {
+    InputSource.PLAYBACK_CAPTURE ->
+        "What other apps on this phone are playing, as far as Android allows it. Apps that " +
+            "forbid playback capture come through as silence, and that is reported as silence."
+    InputSource.BUILTIN_MIC ->
+        "This phone's built-in microphone. Recording is pinned to the built-in device, never to " +
+            "the headset's microphone, so phone A can run its own microphone at the same time " +
+            "without the system cutting either of them."
+    InputSource.PLAYBACK_AND_MIC ->
+        "App audio and the built-in microphone, summed before encoding. Each half's silence is " +
+            "tracked separately, so a microphone that Android has muted cannot hide behind the " +
+            "app audio."
+    InputSource.TEST_TONE ->
+        "A generated tone through the direct PCM input. The Stage 1 bring-up path: it proves the " +
+            "RFCOMM link and the headset output with no capture consent and no microphone."
+}
+
 private fun modeHint(mode: MixMode): String = when (mode) {
     MixMode.HARD_SPLIT ->
-        "Left ear: the track this app plays locally. Right ear: phone B. Without system privileges " +
-            "the app cannot steer audio from other apps on this phone, so pick a local track in Settings."
+        "Left ear: this phone's own source — a local track, or its built-in microphone. Right ear: " +
+            "phone B. With both phones on their microphones this puts one microphone in each ear. " +
+            "Without system privileges the app cannot steer audio from other apps on this phone, so " +
+            "the left channel has to be a source the app owns."
     MixMode.MIXED_STEREO -> "Both sources are summed and played in both ears."
     MixMode.REMOTE_ONLY -> "This phone acts purely as a Bluetooth audio sink for phone B."
     MixMode.PRIORITY -> "The local track is turned down automatically whenever phone B is making sound."

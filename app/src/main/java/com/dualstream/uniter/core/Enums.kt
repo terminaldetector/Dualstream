@@ -58,7 +58,52 @@ enum class CaptureState {
     UNAVAILABLE,
 
     /** Operator chose the direct PCM input instead of system capture. */
-    DIRECT_PCM
+    DIRECT_PCM,
+
+    /** This phone's built-in microphone is the source. */
+    MIC,
+
+    /** Playback capture and the built-in microphone are being summed. */
+    MIC_AND_PLAYBACK,
+
+    /**
+     * Android's audio policy silenced our recorder: another client took the
+     * input, or the app lost its foreground claim on the microphone. The frames
+     * keep arriving and are all zeros, which must never be shown as a stream.
+     */
+    SILENCED_BY_POLICY,
+
+    /**
+     * Capture is running, but the input was routed somewhere other than the
+     * built-in microphone — typically the Bluetooth headset. That is the case
+     * the two-microphone setup has to avoid: grabbing the headset's microphone
+     * pulls it into the hands-free profile and takes A2DP down with it.
+     */
+    WRONG_INPUT_ROUTE
+}
+
+/**
+ * What phone B feeds into the encoder, and what phone A can use as its local
+ * source.
+ *
+ * The microphone options exist so that the two phones can contribute their own
+ * built-in microphones independently. Each phone records its own hardware, so
+ * the two recorders never compete for one microphone — which is exactly what
+ * would happen if both tried to use the headset's microphone, and the system
+ * would then cut the input on both.
+ */
+enum class InputSource(val label: String, val needsProjection: Boolean, val needsMic: Boolean) {
+    /** MediaProjection + AudioPlaybackCapture: what other apps are playing. */
+    PLAYBACK_CAPTURE("App audio", true, false),
+
+    /** This phone's own built-in microphone, pinned to the built-in device. */
+    BUILTIN_MIC("Built-in mic", false, true),
+
+    /** Both of the above, summed before encoding. */
+    PLAYBACK_AND_MIC("App audio + mic", true, true),
+
+    /** Generated signal through the direct PCM input. Stage 1 bring-up. */
+    TEST_TONE("Test tone", false, false)
 }
 
 /** State of the A2DP headset on phone A. */

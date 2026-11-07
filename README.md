@@ -41,11 +41,52 @@ phone A.
 |---|---|
 | §3 RFCOMM transport, discovery, pairing, trusted device, auto reconnect | `transport/` |
 | §4 Opus 48 kHz mono, 24/32/48/64 kbit/s, 10–20 ms frames, adaptive buffer | `codec/`, `audio/JitterBuffer.kt` |
-| §5 MediaProjection + AudioPlaybackCapture, direct PCM input, silence state | `audio/CaptureSource.kt` |
+| §5 MediaProjection + AudioPlaybackCapture, direct PCM input, silence state | `audio/PlaybackCaptureSource.kt`, `audio/DirectPcmInput.kt` |
+| Built-in microphone input on either phone, pinned to the built-in device | `audio/MicCaptureSource.kt`, `audio/MicLocalSource.kt`, `audio/InputRoutePolicy.kt` |
 | §6 Hard Split / Mixed Stereo / Remote Only / Priority | `audio/Mixer.kt` |
 | §7 Simultaneous RFCOMM + A2DP, device-limit reporting | `service/ReceiverService.kt` |
 | §8 Main screen and settings | `ui/` |
 | §9 Foreground services, recovery, buffer cleanup, latency control | `service/`, `audio/` |
+
+## Two microphones, one headset
+
+Either phone can contribute its own **built-in** microphone, so both phones can
+be heard in the same headset at once. On phone B pick it under *What to send*;
+on phone A turn on *Use the built-in microphone as the local source*. In Hard
+Split that puts one phone's microphone in each ear.
+
+The important part is that recording is pinned to the built-in microphone with
+`setPreferredDevice`, and the route is verified after recording starts rather
+than assumed. If Android were left to choose:
+
+- it could route recording to the **headset's** microphone, which switches that
+  headset into the hands-free profile and takes the A2DP stream down with it —
+  the headset stops being a stereo sink and the bridge collapses;
+- and a headset microphone only ever belongs to one phone, so the moment the
+  second phone asked for it the system would cut the input on one of them.
+
+Pinning each phone to its own hardware is what lets both record at the same
+time. For the same reason the app uses the `VOICE_RECOGNITION` audio source
+rather than `VOICE_COMMUNICATION`, and never calls `setMode` or
+`startBluetoothSco`: those are the other ways to end up on the hands-free
+profile.
+
+Two further details that are easy to get wrong:
+
+- `setPrivacySensitive(false)` is set explicitly. Marking the session privacy
+  sensitive would make Android silence *other* recorders — including the
+  playback capture running next to it in the same app, which is precisely the
+  "app audio + mic" mode.
+- A recorder that Android has muted keeps returning frames on schedule; they are
+  just zeros. `RecordingPolicyMonitor` watches `isClientSilenced`, so a muted
+  microphone is reported as muted instead of looking like a quiet room. In the
+  combined mode each half's silence is tracked separately, so a dead microphone
+  cannot hide behind the app audio.
+
+Acoustic warning: phone A's microphone sitting next to the headset it is also
+feeding is a loop. The platform echo canceller is attached when available, but
+it is tuned for handset playback, not for leakage out of an earpiece, so the app
+says so rather than pretending it is solved.
 
 ## Honest limitations
 
@@ -78,6 +119,13 @@ surfaced rather than hidden.
 6. **MediaProjection is never restarted silently.** If the system or the user
    stops the projection, the transmitter stops and asks for fresh consent,
    because that requires a user gesture.
+7. **The microphone can be taken away at any time.** Android grants the input to
+   one client and may mute ours without any error. The app detects and reports
+   that, but it cannot prevent it; only the built-in-device pinning stops the
+   two phones from causing it to each other.
+8. **No continuous integration.** There is no GitHub Actions workflow and no APK
+   build in this repository, by instruction, until the specification is complete
+   and Stage 4 has been run. `docs/CI.md` records what to set up afterwards.
 
 ## Development stages
 
@@ -87,7 +135,8 @@ The order of work follows section 10 of the specification.
   tone* on phone B streams a generated signal through the direct PCM input, so
   the RFCOMM link and the headset output can be verified before any capture
   consent exists.
-- **Stage 2 — Audio Capture.** Done: `PlaybackCaptureSource`.
+- **Stage 2 — Audio Capture.** Done: `PlaybackCaptureSource`, plus built-in
+  microphone capture on both phones and a combined "app audio + mic" source.
 - **Stage 3 — Dual Audio.** Done: `Mixer`, independent volumes, four modes,
   channel balance.
 - **Stage 4 — Stability.** This is field work on two physical phones. The
@@ -105,15 +154,18 @@ RFCOMM framing and its resynchronisation and checksum behaviour, the handshake
 messages, the ADPCM codec's signal-to-noise ratio and its recovery after a lost
 packet, the resampler, the mixer in all four modes including ducking and
 saturation, the jitter buffer's priming, latency trimming and concealment, the
-frame assembler and the reconnect backoff.
+frame assembler, the reconnect backoff, the sample ring that decouples the
+microphone from the mixer, the input-route policy and the two-source capture
+mixing including its failure and silence paths.
 
 ```bash
 ./gradlew :app:testDebugUnitTest
 ```
 
-57 tests, all passing at the time of writing. They found one real bug: the
-concealment fade never reached zero, so it still produced the click it existed
-to prevent.
+85 tests, all passing at the time of writing. They have found two real bugs so
+far: the concealment fade never reached zero, so it still produced the click it
+existed to prevent; and a capture feeder would spin at full CPU against a source
+that returns without blocking.
 
 The Android-dependent half (services, MediaCodec wrappers, capture, AudioTrack,
 Compose UI) is not covered by these tests and has not been exercised on a
@@ -140,3 +192,6 @@ Install on both phones, then on each one pick its role on the main screen:
 4. Phone B: role B, open **Devices**, select phone A, press **Start sending**
    and accept the capture prompt. (Or **Send test tone** to check the link first.)
 5. Pick a playback mode on phone A and balance the two volumes.
+
+For the two-microphone setup, choose *Built-in mic* on phone B in step 4 — it
+needs no capture consent — and turn on the microphone switch on phone A.

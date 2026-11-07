@@ -84,6 +84,36 @@ class Prefs(context: Context) {
             Logx.verbose = v
         }
 
+    /** What phone B feeds into the encoder. */
+    var inputSource: InputSource
+        get() = runCatching {
+            InputSource.valueOf(sp.getString(K_INPUT, InputSource.PLAYBACK_CAPTURE.name)!!)
+        }.getOrDefault(InputSource.PLAYBACK_CAPTURE)
+        set(v) = sp.edit().putString(K_INPUT, v.name).apply()
+
+    /**
+     * Use this phone's built-in microphone as the local source on phone A.
+     * Together with phone B sending its own microphone, this is the
+     * two-microphone setup: each phone records its own hardware.
+     */
+    var micAsLocalSource: Boolean
+        get() = sp.getBoolean(K_MIC_LOCAL, false)
+        set(v) = sp.edit().putBoolean(K_MIC_LOCAL, v).apply()
+
+    /** Linear gain applied to microphone input, 0f..4f. */
+    var micGain: Float
+        get() = sp.getFloat(K_MIC_GAIN, 1.0f)
+        set(v) = sp.edit().putFloat(K_MIC_GAIN, v.coerceIn(0f, 4f)).apply()
+
+    /**
+     * Attach the platform echo canceller and noise suppressor to microphone
+     * input when the device offers them. Worth having when both phones run
+     * their microphones into one headset, where leakage would otherwise loop.
+     */
+    var micProcessing: Boolean
+        get() = sp.getBoolean(K_MIC_FX, true)
+        set(v) = sp.edit().putBoolean(K_MIC_FX, v).apply()
+
     /** Optional content URI of the app-managed local source used by HARD_SPLIT. */
     var localSourceUri: String?
         get() = sp.getString(K_LOCAL_URI, null)
@@ -114,5 +144,9 @@ class Prefs(context: Context) {
         const val K_POWER_SAVE = "power_save"
         const val K_VERBOSE = "verbose"
         const val K_LOCAL_URI = "local_uri"
+        const val K_INPUT = "input_source"
+        const val K_MIC_LOCAL = "mic_local"
+        const val K_MIC_GAIN = "mic_gain"
+        const val K_MIC_FX = "mic_fx"
     }
 }

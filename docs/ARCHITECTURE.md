@@ -7,7 +7,9 @@ core/        enums, settings, process-wide observable state, logging
 protocol/    RFCOMM framing, handshake and control messages
 transport/   Bluetooth discovery, pairing, RFCOMM sockets, reconnect backoff
 codec/       encoder/decoder contracts, Opus via MediaCodec, IMA-ADPCM, raw PCM
-audio/       capture sources, resampler, jitter buffer, mixer, AudioTrack sink
+audio/       capture sources (playback capture, built-in microphone, direct PCM,
+             and their mix), resampler, sample ring, jitter buffer, mixer,
+             input-route policy, AudioTrack sink
 service/     the two foreground services and their notifications
 ui/          Compose screens
 ```
@@ -79,6 +81,8 @@ digital silence.
 | `dualstream-keepalive` | A | PING every 2 s |
 | `dualstream-connect` | B | connect with backoff, then capture → encode → send |
 | `dualstream-tx-reader` | B | control frames from A |
+| `dualstream-mix-secondary` | B | microphone into the ring, for "app audio + mic" |
+| `dualstream-local-mic` | A | this phone's microphone into the ring |
 
 The playback thread is paced by the blocking `AudioTrack.write`, which is the
 only clock that matters on the receiving side. Decoding happens on the network
@@ -116,6 +120,49 @@ changing quantisation; it changes the sample rate instead (8/12/16 kHz for
 32/48/64 kbit/s). The pipeline resamples around whatever rate the codec reports,
 and the receiver resamples back to 48 kHz before mixing.
 
+## Microphone input and why it is pinned
+
+Both phones can record their own built-in microphone: on B as the encoder's
+input, on A as the mixer's local source. The whole design of this path is about
+not losing the input or the headset.
+
+`InputRoutePolicy` holds the rule — record the built-in microphone, nothing
+else — as plain integer logic with no Android dependency, so it is unit-tested.
+`MicCaptureSource` asserts at runtime that its constants still match
+`AudioDeviceInfo`, which is the only thing the duplication could get wrong.
+
+The reasoning:
+
+- Asking for "the microphone" with a Bluetooth headset connected lets Android
+  route the input to the headset's microphone. That switches the headset to the
+  hands-free profile and the A2DP stream dies with it.
+- A headset microphone belongs to one phone at a time. Two phones asking for it
+  means one of them gets silenced.
+- `setPreferredDevice` is a request, not a guarantee, so `routedDevice` is
+  checked after `startRecording`, and `RecordingPolicyMonitor` keeps watching
+  because the platform can move a recording later.
+
+Consequently this code never calls `setMode`, never calls `startBluetoothSco`,
+and uses `VOICE_RECOGNITION` rather than `VOICE_COMMUNICATION` — each of those
+is a route to the hands-free profile. `setPrivacySensitive(false)` is explicit
+so this session does not silence the playback capture beside it.
+
+### Clock separation
+
+A recorder is paced by the capture clock, a player by the output clock, and the
+two drift. `PcmRing` sits between them: non-blocking reads, and writes that drop
+the oldest samples when the reader falls behind. Aged live microphone audio is
+worthless, so discarding it is the right failure mode.
+
+- `MicLocalSource` uses it so a late microphone frame becomes silence in the
+  local channel instead of stalling playback of *both* sources.
+- `MixCaptureSource` uses it for the secondary source, so the primary's blocking
+  read stays the clock and neither recorder's jitter becomes the other's problem.
+
+`MixCaptureSource` tracks each side's silence separately. The sum of a live
+source and a muted one is still audible, so a single check would hide the
+muting — the exact thing section 5 forbids reporting as a working stream.
+
 ## What the app deliberately does not do
 
 - No `INTERNET` permission, so there is no IP path even by accident.
@@ -124,3 +171,8 @@ and the receiver resamples back to 48 kHz before mixing.
 - No hidden APIs to force Bluetooth profile switching.
 - No attempt to re-acquire MediaProjection without a user gesture.
 - No claim that an uncapturable app is being transmitted.
+- No recording from anything but the built-in microphone, and no SCO or call
+  audio mode, so the headset is never pulled off A2DP.
+- No claim that a microphone muted by the audio policy is sending audio.
+- No GitHub Actions workflow and no APK build in the repository, by instruction,
+  until the specification is complete and Stage 4 has been run (`docs/CI.md`).

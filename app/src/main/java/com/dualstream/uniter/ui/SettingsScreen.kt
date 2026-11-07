@@ -47,6 +47,8 @@ fun SettingsScreen(
     val powerSave = remember { mutableStateOf(prefs.powerSave) }
     val verbose = remember { mutableStateOf(prefs.verboseLog) }
     val localUri = remember { mutableStateOf(prefs.localSourceUri) }
+    val micGain = remember { mutableStateOf(prefs.micGain) }
+    val micFx = remember { mutableStateOf(prefs.micProcessing) }
 
     val opusAvailable = remember { CodecFactory.opusEncodeSupported() }
 
@@ -170,6 +172,44 @@ fun SettingsScreen(
                         prefs.balance = balance.value
                         onSettingsChanged()
                     }
+                )
+            }
+
+            SectionCard("Microphone") {
+                Text(
+                    "Input gain: ${"%.1f".format(micGain.value)}×",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Slider(
+                    value = micGain.value,
+                    valueRange = 0.25f..4f,
+                    onValueChange = { micGain.value = it },
+                    onValueChangeFinished = {
+                        prefs.micGain = micGain.value
+                        onSettingsChanged()
+                    }
+                )
+                ToggleRow("Echo and noise processing", micFx.value) {
+                    micFx.value = it
+                    prefs.micProcessing = it
+                    onSettingsChanged()
+                }
+                Text(
+                    "Attaches the platform echo canceller, noise suppressor and automatic gain " +
+                        "control when the device offers them. Takes effect the next time the " +
+                        "microphone is opened.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+                Box(Modifier.size(8.dp))
+                Text(
+                    "Recording is always pinned to the built-in microphone. Letting Android pick " +
+                        "could put it on the headset's microphone, which switches that headset to " +
+                        "the hands-free profile and takes the A2DP stream down — and a headset " +
+                        "microphone can only ever belong to one phone, so the other one would be " +
+                        "cut off. Nothing here uses Bluetooth SCO or the call audio mode.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary
                 )
             }
 
