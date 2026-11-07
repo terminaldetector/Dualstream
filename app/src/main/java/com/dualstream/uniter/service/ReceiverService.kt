@@ -384,7 +384,6 @@ class ReceiverService : Service() {
         var resampler: Resampler? = null
         var scratch = ShortArray(0)
         var lastSeq = -1
-        var connectedAt = 0L
 
         while (running.get() && !link.closed) {
             val frame = link.reader.read()
@@ -407,7 +406,7 @@ class ReceiverService : Service() {
                     assembler = FrameAssembler(engine?.frameSamples ?: (Pcm.OUT_RATE * 20 / 1000))
                     scratch = ShortArray(maxOf(4096, dec.frameSamples * 8))
                     engine?.flushAudio()
-                    connectedAt = System.currentTimeMillis()
+                    val connectedAt = System.currentTimeMillis()
                     windowUnderruns = engine?.jitter?.underruns ?: 0
                     windowStartMs = connectedAt
                     AppState.setLink(LinkState.CONNECTED)

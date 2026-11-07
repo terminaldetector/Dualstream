@@ -90,17 +90,34 @@ REQUIRED_SERVICE_TYPES = {
 #   A: android:name="x" (Raw: "x")
 # so the resource id is optional, and integers may be hex or decimal.
 _INT = r"(0x[0-9a-fA-F]+|-?\d+)"
+# Booleans appear as 0x0/0xffffffff in some aapt2 versions and as the literals
+# true/false in others.
+_BOOL = r"(0x[0-9a-fA-F]+|-?\d+|true|false)"
 ATTR_NAME_RE = re.compile(r'android:name(?:\([^)]*\))?="([^"]+)"')
 ATTR_FGS_RE = re.compile(
     r"android:foregroundServiceType(?:\([^)]*\))?=(?:\(type [^)]*\))?" + _INT
 )
 ATTR_EXPORTED_RE = re.compile(
-    r"android:exported(?:\([^)]*\))?=(?:\(type [^)]*\))?" + _INT
+    r"android:exported(?:\([^)]*\))?=(?:\(type [^)]*\))?" + _BOOL
 )
+
+# aapt2 renamed this between build-tools versions: older releases print
+# "sdkVersion:'29'", 34+ prints "minSdkVersion:'29'". Anchored to the start of
+# the line so "targetSdkVersion:'34'" can never be read as the minimum.
+MIN_SDK_RE = re.compile(r"^(?:min)?[sS]dkVersion:'(\d+)'", re.MULTILINE)
 
 
 def parse_int(text: str) -> int:
     return int(text, 16) if text.lower().startswith("0x") else int(text)
+
+
+def parse_bool(text: str) -> bool:
+    lowered = text.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    return parse_int(text) != 0
 
 
 def describe_bits(mask: int) -> str:
@@ -157,13 +174,15 @@ def parse_services(xmltree: str) -> dict[str, dict]:
             if current is not None and current["name"]:
                 services[current["name"]] = current
             current = (
-                {"name": None, "types": 0, "exported": None}
+                {"name": None, "types": 0, "exported": None, "raw": []}
                 if m_elem.group(1) == "service"
                 else None
             )
             continue
         if current is None:
             continue
+        if stripped.startswith("A: "):
+            current["raw"].append(stripped)
         m_name = re.search(ATTR_NAME_RE, stripped)
         if m_name:
             current["name"] = m_name.group(1)
@@ -174,7 +193,7 @@ def parse_services(xmltree: str) -> dict[str, dict]:
             continue
         m_exported = re.search(ATTR_EXPORTED_RE, stripped)
         if m_exported:
-            current["exported"] = parse_int(m_exported.group(1)) != 0
+            current["exported"] = parse_bool(m_exported.group(1))
     if current is not None and current["name"]:
         services[current["name"]] = current
     return services
@@ -207,6 +226,33 @@ SAMPLE_AAPT2 = """N: android=http://schemas.android.com/apk/res/android
         E: intent-filter (line=72)
           E: action (line=73)
             A: http://schemas.android.com/apk/res/android:name(0x01010003)="android.bluetooth.adapter.action.STATE_CHANGED" (Raw: "android.bluetooth.adapter.action.STATE_CHANGED")
+"""
+
+# build-tools 37 renamed the minimum-SDK key and prints booleans as literals.
+# Both shapes came out of a real pipeline run.
+SAMPLE_BADGING_NEW = """package: name='com.dualstream.uniter' versionCode='1' versionName='2.1.0'
+minSdkVersion:'29'
+targetSdkVersion:'34'
+uses-permission: name='android.permission.BLUETOOTH_CONNECT'
+uses-permission: name='android.permission.BLUETOOTH' maxSdkVersion='30'
+"""
+
+SAMPLE_BADGING_OLD = """package: name='com.dualstream.uniter' versionCode='1'
+sdkVersion:'29'
+targetSdkVersion:'34'
+"""
+
+SAMPLE_BOOL_LITERAL = """N: android=http://schemas.android.com/apk/res/android
+  E: manifest (line=2)
+    E: application (line=40)
+      E: service (line=58)
+        A: http://schemas.android.com/apk/res/android:name(0x01010003)="com.dualstream.uniter.service.ReceiverService" (Raw: "...")
+        A: http://schemas.android.com/apk/res/android:exported(0x01010010)=(type 0x12)false
+        A: http://schemas.android.com/apk/res/android:foregroundServiceType(0x0101063f)=(type 0x11)0x92
+      E: service (line=63)
+        A: http://schemas.android.com/apk/res/android:name(0x01010003)="com.dualstream.uniter.service.TransmitterService" (Raw: "...")
+        A: http://schemas.android.com/apk/res/android:exported(0x01010010)=false
+        A: http://schemas.android.com/apk/res/android:foregroundServiceType(0x0101063f)=(type 0x11)0xb0
 """
 
 # The shape older aapt used, in case a runner's build-tools only ships aapt.
@@ -263,6 +309,30 @@ def self_test() -> int:
     elif lrecv["types"] != (FGS_MEDIA_PLAYBACK | FGS_CONNECTED_DEVICE | FGS_MICROPHONE):
         problems.append(f"legacy sample: types = {describe_bits(lrecv['types'])}")
 
+    # The minimum-SDK key, both spellings, and never the target.
+    for sample, label in ((SAMPLE_BADGING_NEW, "new"), (SAMPLE_BADGING_OLD, "old")):
+        m = MIN_SDK_RE.search(sample)
+        if not m:
+            problems.append(f"{label} badging: minSdkVersion not found")
+        elif m.group(1) != "29":
+            problems.append(f"{label} badging: read minSdk {m.group(1)}, expected 29")
+
+    # Booleans printed as literals rather than as 0x0.
+    literal = parse_services(SAMPLE_BOOL_LITERAL)
+    for svc in (
+        "com.dualstream.uniter.service.ReceiverService",
+        "com.dualstream.uniter.service.TransmitterService",
+    ):
+        found = literal.get(svc)
+        if not found:
+            problems.append(f"bool-literal sample: {svc} not found")
+        elif found["exported"] is not False:
+            problems.append(
+                f"bool-literal sample: {svc} exported read as {found['exported']}"
+            )
+    if parse_bool("false") or not parse_bool("true") or not parse_bool("0xffffffff"):
+        problems.append("parse_bool cannot read literals and integers")
+
     if describe_bits(FGS_MICROPHONE | FGS_CONNECTED_DEVICE) != "connectedDevice|microphone":
         problems.append("describe_bits produced an unexpected label")
     if parse_int("0x92") != 146 or parse_int("146") != 146:
@@ -316,7 +386,7 @@ def main() -> int:
             failures.append(f"{perm} is missing from the package")
 
     # --- minSdk
-    m = re.search(r"sdkVersion:'(\d+)'", badging)
+    m = MIN_SDK_RE.search(badging)
     if not m:
         failures.append("could not read minSdkVersion from the package")
     elif int(m.group(1)) != EXPECTED_MIN_SDK:
@@ -340,7 +410,13 @@ def main() -> int:
                 f"claim the manifest does not cover, so this service would fail "
                 f"to start on a device."
             )
-        if found["exported"]:
+        if found["exported"] is None:
+            failures.append(
+                f"{name}: could not read android:exported, so it cannot be "
+                f"confirmed internal. Attributes seen: " +
+                "; ".join(found.get("raw", [])) or "(none)"
+            )
+        elif found["exported"]:
             failures.append(f"{name} is exported; it must stay internal")
 
     print(f"permissions: {len(permissions)}")
@@ -348,6 +424,7 @@ def main() -> int:
         print(f"service {name}: types={describe_bits(info['types'])} "
               f"exported={info['exported']}")
 
+    sys.stdout.flush()
     if failures:
         print("\nFAILED:", file=sys.stderr)
         for f in failures:

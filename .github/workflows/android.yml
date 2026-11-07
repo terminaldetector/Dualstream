@@ -56,7 +56,7 @@ jobs:
         run: python3 scripts/check_apk.py --self-test
 
       - name: Run unit tests
-        run: ./gradlew :app:testDebugUnitTest --stacktrace
+        run: ./gradlew :app:testDebugUnitTest
 
       - name: Upload test report
         if: always()
@@ -97,7 +97,13 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Run lint
-        run: ./gradlew :app:lintDebug --stacktrace
+        run: ./gradlew :app:lintDebug
+
+      # Gradle's lint failure does not say what it found, and the HTML report is
+      # only readable once downloaded. Put the errors in the log instead.
+      - name: Show lint findings
+        if: failure()
+        run: python3 scripts/show_lint.py app/build/reports/lint-results-debug.xml
 
       - name: Upload lint report
         if: always()
@@ -138,7 +144,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Assemble debug APK
-        run: ./gradlew :app:assembleDebug --stacktrace
+        run: ./gradlew :app:assembleDebug
 
       - name: Check the package against the specification
         run: python3 scripts/check_apk.py app/build/outputs/apk/debug/app-debug.apk
@@ -199,7 +205,7 @@ jobs:
           ram-size: 4096M
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
-          script: ./gradlew :app:connectedDebugAndroidTest --stacktrace
+          script: ./gradlew :app:connectedDebugAndroidTest
 
       - name: Upload instrumented test report
         if: always()

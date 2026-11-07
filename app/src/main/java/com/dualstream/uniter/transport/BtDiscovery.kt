@@ -134,6 +134,19 @@ class BtDiscovery(private val context: Context) {
             }
         } ?: false
 
+    /**
+     * Reads the device out of a discovery broadcast. The untyped
+     * `getParcelableExtra(String)` is deprecated from API 33, and the typed
+     * overload only exists from API 33, so both paths are needed.
+     */
+    @Suppress("DEPRECATION")
+    private fun extraDevice(intent: Intent): BluetoothDevice? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+        } else {
+            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+        }
+
     private fun registerReceiver() {
         if (receiver != null) return
         val r = object : BroadcastReceiver() {
@@ -141,8 +154,7 @@ class BtDiscovery(private val context: Context) {
             override fun onReceive(ctx: Context?, intent: Intent?) {
                 when (intent?.action) {
                     BluetoothDevice.ACTION_FOUND -> {
-                        val dev: BluetoothDevice? =
-                            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                        val dev: BluetoothDevice? = extraDevice(intent)
                         if (dev != null) {
                             val entry = PeerDevice(
                                 safeName(dev), dev.address,
