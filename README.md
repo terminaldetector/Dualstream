@@ -123,9 +123,10 @@ surfaced rather than hidden.
    one client and may mute ours without any error. The app detects and reports
    that, but it cannot prevent it; only the built-in-device pinning stops the
    two phones from causing it to each other.
-8. **No continuous integration.** There is no GitHub Actions workflow and no APK
-   build in this repository, by instruction, until the specification is complete
-   and Stage 4 has been run. `docs/CI.md` records what to set up afterwards.
+8. **A green pipeline is not a working bridge.** CI builds the app, runs the
+   logic tests and checks that it starts on an emulator. It cannot test two
+   Bluetooth links on one radio, A2DP coexistence, microphone contention or
+   latency, because those need two phones and a headset. See `docs/CI.md`.
 
 ## Development stages
 
@@ -168,13 +169,22 @@ existed to prevent; and a capture feeder would spin at full CPU against a source
 that returns without blocking.
 
 The Android-dependent half (services, MediaCodec wrappers, capture, AudioTrack,
-Compose UI) is not covered by these tests and has not been exercised on a
-device.
+Compose UI) is not covered by these tests. CI compiles it, checks the assembled
+package against the product's hard constraints, and boots an emulator to confirm
+the app starts — but no part of the actual bridge has been exercised on real
+hardware.
+
+## Continuous integration
+
+`.github/workflows/android.yml` runs on every push: unit tests, lint, a debug
+APK build with a package check, and an emulator startup smoke test. The APK and
+all reports are uploaded as artifacts. Details and, more importantly, the list
+of what CI *cannot* verify are in `docs/CI.md`.
 
 ## Building
 
 Standard Android Gradle project, `minSdk` 29 (AudioPlaybackCapture), `targetSdk`
-34.
+34. The Gradle wrapper is committed, so no local Gradle install is needed.
 
 ```bash
 ./gradlew :app:assembleDebug

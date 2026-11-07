@@ -1,55 +1,80 @@
-# Continuous integration — deferred plan, not wired up
+# Continuous integration
 
-**Nothing in this repository runs on GitHub Actions.** There is no
-`.github/` directory and no workflow file, by instruction: CI and APK builds
-are deferred until the specification is fully implemented and Stage 4 has been
-run on physical devices. This file only records what to set up later, so the
-decision does not have to be rediscovered.
+`.github/workflows/android.yml` runs on every push, on pull requests and on
+demand. Four jobs, in parallel, so one failure does not hide the other signals.
 
-Do not add a workflow until that instruction is lifted.
+| Job | What it proves |
+|---|---|
+| **Unit tests** | `:app:testDebugUnitTest` — the wire protocol, codecs, resampler, mixer, jitter buffer, sample ring, input-route policy and capture mixing. No device needed; this is what catches logic regressions. |
+| **Lint** | `:app:lintDebug` — mainly for the permission and foreground-service-type checks, which are easy to get wrong and otherwise only surface on a device. |
+| **Build debug APK** | `:app:assembleDebug` compiles the Android half — services, MediaCodec wrappers, capture paths, Compose UI — which the unit tests do not touch at all. Then `scripts/check_apk.py` checks the built package. The APK is uploaded as an artifact. |
+| **Startup smoke test** | Boots an API 34 emulator and runs `:app:connectedDebugAndroidTest`: the app must start, survive a recreation, and persist its settings, all with no permissions granted. |
 
-## Why it is deferred rather than forgotten
+Reports and the APK are uploaded as artifacts on every run, including failures.
 
-A green build would prove very little here. Section 11 of the specification is
-explicit that the app counts as working only after a test on two real phones,
-and the part that can fail in interesting ways — two Bluetooth links on one
-radio, the audio policy deciding who gets the microphone, vendor foreground
-service limits — is exactly the part no CI runner can exercise. Producing an
-APK now would mostly create the impression of verification.
+## What the package check verifies
 
-What CI *can* usefully do is keep the platform-independent half honest. That is
-worth having, later.
+`scripts/check_apk.py` inspects the assembled APK with `aapt2`. A build that
+compiles says nothing about whether the package still obeys the product rules,
+and each of these would quietly break it:
 
-## What to run when it is enabled
+- **No IP networking permission at all.** Sections 2 and 12 require a
+  Bluetooth-only transport, and the absence of `INTERNET` is what makes that
+  structural rather than a promise. A dependency pulling the permission in
+  through manifest merging is exactly the kind of thing nobody notices by hand.
+  `ACCESS_NETWORK_STATE`, `ACCESS_WIFI_STATE` and the Wi-Fi change permissions
+  are refused too.
+- **The permissions the app cannot work without**, including
+  `FOREGROUND_SERVICE_MICROPHONE`.
+- **`minSdk` is 29**, which is what AudioPlaybackCapture needs.
+- **Both services declare the foreground service types they claim at runtime.**
+  Android refuses a claim the manifest does not cover, so a missing bit means a
+  service that cannot start — on a device, in the field, not at build time.
+- **Neither service is exported.**
 
-In order of value:
+The script parses `aapt2` text output, which differs between versions. If that
+parsing silently stopped matching, every assertion above would turn into a
+pass, so the parser has its own test against recorded output shapes from both
+`aapt2` and the older `aapt`, and the script runs that test before trusting
+itself. Run it directly with:
 
-1. **`:app:testDebugUnitTest`** — the JVM tests. These cover the wire format,
-   the codecs, the resampler, the mixer, the jitter buffer, the sample ring, the
-   input-route policy and the capture mixing. They need no emulator and no
-   device, and they are what would actually catch a regression.
-2. **`:app:lintDebug`** — worth it mainly for the permission and
-   foreground-service-type checks, which are easy to get wrong and hard to
-   notice without a device.
-3. **`:app:assembleDebug`** — compiles the Android half, which the JVM tests do
-   not touch. This is the only way the services and the Compose UI get type-
-   checked at all today.
+```bash
+python3 scripts/check_apk.py --self-test
+```
 
-An instrumented test run (`connectedDebugAndroidTest`) is not worth setting up:
-the behaviour that matters needs two phones and a headset, which no hosted
-runner has.
+That test has already earned its place: it caught the parser dropping the first
+of two consecutive `<service>` elements.
 
-## Notes for whoever sets it up
+## What CI cannot tell you
 
-- The Gradle wrapper properties are committed but the wrapper JAR and scripts
-  are not, so either commit them or use `gradle/actions/setup-gradle`.
-- `minSdk` is 29 and `compileSdk` is 34; the Android SDK platform and build
-  tools have to be provisioned on the runner.
+Section 11 of the specification is explicit that the app counts as working only
+after a test on two physical phones, and that is not pedantry — the parts most
+likely to fail are the parts no runner has:
+
+- two Bluetooth links sharing one radio;
+- A2DP coexisting with RFCOMM;
+- the audio policy deciding which app gets the microphone;
+- whether a built-in microphone stays pinned when a headset is connected;
+- vendor-specific foreground service and battery limits;
+- end-to-end audio latency.
+
+So a green pipeline means "it builds, the logic is intact and it starts". It
+does not mean the bridge works. `docs/TESTING.md` is the procedure that decides
+that, and it still has to be run by hand.
+
+## Notes
+
+- The Gradle wrapper is committed, including the JAR, and the pipeline runs
+  `gradle/actions/wrapper-validation` to prove that binary is a genuine Gradle
+  release before executing it.
+- Gradle 8.9, AGP 8.5.2, Kotlin 1.9.24, JDK 17, `compileSdk` 34.
 - Dependencies come from `google()` and `mavenCentral()` only.
-- The unit tests use `testOptions { unitTests.isReturnDefaultValues = true }`,
-  because a few classes under test touch `android.util.Log`. Nothing else in the
-  tested set needs the framework.
-- The tests include two deliberately concurrent cases (`PcmRingTest`,
+- The unit tests set `unitTests.isReturnDefaultValues = true`, because a few
+  classes under test touch `android.util.Log`.
+- Two unit tests are deliberately concurrent (`PcmRingTest`,
   `MixCaptureSourceTest`). They are bounded and assert invariants rather than
-  timings, but a heavily loaded shared runner is the place where a latent
-  flake would show up first.
+  timings, but a heavily loaded shared runner is where a latent flake would show
+  up first.
+- The emulator job is the slowest and the most likely to be flaky for reasons
+  that have nothing to do with the app. It is kept separate so the other three
+  signals stay readable.
