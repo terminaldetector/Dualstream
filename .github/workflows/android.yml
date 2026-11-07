@@ -16,6 +16,8 @@ permissions:
 
 env:
   GRADLE_OPTS: -Dorg.gradle.daemon=false
+  # compileSdk 34; build-tools supplies the aapt2 the package check uses.
+  SDK_PACKAGES: 'platform-tools platforms;android-34 build-tools;34.0.0'
 
 jobs:
   # The JVM tests: the wire protocol, codecs, resampler, mixer, jitter buffer,
@@ -41,6 +43,11 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The action's default package list still includes the obsolete
+          # "tools" package, which Google removed from the SDK repository, so
+          # sdkmanager fails. Ask for exactly what this build needs instead.
+          packages: ${{ env.SDK_PACKAGES }}
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -80,6 +87,11 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The action's default package list still includes the obsolete
+          # "tools" package, which Google removed from the SDK repository, so
+          # sdkmanager fails. Ask for exactly what this build needs instead.
+          packages: ${{ env.SDK_PACKAGES }}
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -116,6 +128,11 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The action's default package list still includes the obsolete
+          # "tools" package, which Google removed from the SDK repository, so
+          # sdkmanager fails. Ask for exactly what this build needs instead.
+          packages: ${{ env.SDK_PACKAGES }}
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -154,6 +171,11 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The action's default package list still includes the obsolete
+          # "tools" package, which Google removed from the SDK repository, so
+          # sdkmanager fails. Ask for exactly what this build needs instead.
+          packages: ${{ env.SDK_PACKAGES }}
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
