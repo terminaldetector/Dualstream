@@ -1,0 +1,91 @@
+package com.dualstream.uniter.core
+
+/** Which half of the bridge this phone acts as. */
+enum class Role {
+    /** Phone A. Owns the Bluetooth headset, runs the RFCOMM server, mixes and plays. */
+    RECEIVER,
+
+    /** Phone B. Captures its own playback and pushes encoded frames over RFCOMM. */
+    TRANSMITTER
+}
+
+/** Output routing modes of section 6 of the specification. */
+enum class MixMode(val label: String) {
+    /** Left ear = local (app-managed) source, right ear = remote phone. */
+    HARD_SPLIT("Hard Split"),
+
+    /** Both sources summed into both ears. */
+    MIXED_STEREO("Mixed Stereo"),
+
+    /** Phone A behaves purely as a Bluetooth audio sink for phone B. */
+    REMOTE_ONLY("Remote Only"),
+
+    /** Local source is ducked automatically while the remote stream is active. */
+    PRIORITY("Priority")
+}
+
+/** Transport-level link state, shared by both roles. */
+enum class LinkState {
+    IDLE,
+    LISTENING,
+    CONNECTING,
+    HANDSHAKING,
+    CONNECTED,
+    RECOVERING,
+    BLUETOOTH_OFF,
+    NO_PERMISSION,
+    FAILED
+}
+
+/** State of the capture side on phone B. */
+enum class CaptureState {
+    IDLE,
+
+    /** MediaProjection consent not granted (or revoked by the system). */
+    NEEDS_CONSENT,
+
+    /** AudioRecord is running and delivering non-silent audio. */
+    CAPTURING,
+
+    /**
+     * AudioRecord is running but every frame is digital silence. On Android this
+     * normally means the apps that are playing did not allow playback capture.
+     * The specification explicitly forbids reporting this as a live stream.
+     */
+    CAPTURING_SILENCE,
+
+    /** Capture could not be started at all. */
+    UNAVAILABLE,
+
+    /** Operator chose the direct PCM input instead of system capture. */
+    DIRECT_PCM
+}
+
+/** State of the A2DP headset on phone A. */
+enum class HeadsetState {
+    UNKNOWN,
+    DISCONNECTED,
+    CONNECTED_A2DP,
+
+    /**
+     * Headset connected, but the device reports that running RFCOMM and A2DP at
+     * the same time degrades the link (section 7).
+     */
+    CONNECTED_DEGRADED
+}
+
+/** Codecs the transport can negotiate. Numeric ids travel on the wire. */
+enum class CodecId(val wire: Int, val label: String) {
+    /** Opus through MediaCodec. Preferred, 48 kHz. */
+    OPUS(1, "Opus"),
+
+    /** IMA-ADPCM at a reduced sample rate. Pure Kotlin, always available. */
+    ADPCM(2, "ADPCM"),
+
+    /** Raw PCM16. Diagnostics only: it does not fit a real RFCOMM link. */
+    PCM16(3, "PCM16 (raw)");
+
+    companion object {
+        fun fromWire(v: Int): CodecId? = entries.firstOrNull { it.wire == v }
+    }
+}

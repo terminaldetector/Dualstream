@@ -1,0 +1,1 @@
+-keep class com.dualstream.uniter.protocol.** { *; }

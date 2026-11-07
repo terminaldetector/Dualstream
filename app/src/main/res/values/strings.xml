@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">DualStream Uniter</string>
+    <string name="chan_receiver_name">Audio receiver</string>
+    <string name="chan_transmitter_name">Audio transmitter</string>
+</resources>
