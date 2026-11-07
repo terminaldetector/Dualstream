@@ -8,9 +8,22 @@
         android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
         android:maxSdkVersion="30" />
-    <!-- Discovery on API <= 30 requires a location permission -->
+    <!--
+        Bluetooth Classic discovery on API 29-30 requires ACCESS_FINE_LOCATION
+        specifically; COARSE is not sufficient there. From API 31 the app uses
+        BLUETOOTH_SCAN with neverForLocation instead, which is why this is
+        capped at 30.
+
+        Lint's CoarseFineLocation check asks for COARSE alongside FINE because
+        on Android 12 and above the user may grant only approximate location.
+        That premise cannot hold here: maxSdkVersion caps this permission at 30,
+        so on Android 12 and above the app neither requests nor holds it, and
+        the partial-grant UI the rule is about does not exist on 29-30. Adding
+        COARSE would declare a permission that could never enable anything.
+    -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
-        android:maxSdkVersion="30" />
+        android:maxSdkVersion="30"
+        tools:ignore="CoarseFineLocation" />
 
     <!-- API 31+ runtime Bluetooth permissions -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"

@@ -99,6 +99,12 @@ jobs:
       - name: Run lint
         run: ./gradlew :app:lintDebug
 
+      # Lint only fails the build on errors, so without this the warnings would
+      # never be looked at once it passes.
+      - name: Lint issue summary
+        if: always()
+        run: python3 scripts/show_lint.py app/build/reports/lint-results-debug.xml --summary
+
       # Gradle's lint failure does not say what it found, and the HTML report is
       # only readable once downloaded. Put the errors in the log instead.
       - name: Show lint findings
