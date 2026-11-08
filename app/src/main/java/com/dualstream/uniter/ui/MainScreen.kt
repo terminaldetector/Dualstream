@@ -661,6 +661,11 @@ private fun sourceHint(source: InputSource): String = when (source) {
 }
 
 private fun modeHint(mode: MixMode): String = when (mode) {
+    MixMode.STRICT_HARD_SPLIT ->
+        "One phone per ear and nothing else: this phone on the left, phone B on the right. " +
+            "No balance, no ducking, and no falling back — if one side has no source that ear " +
+            "is silent and the other keeps playing."
+
     MixMode.HARD_SPLIT ->
         "Left ear: this phone's own source — a local track, or its built-in microphone. Right ear: " +
             "phone B. With both phones on their microphones this puts one microphone in each ear. " +
