@@ -250,8 +250,19 @@ The order of work follows section 10 of the specification.
   the counters that stage needs on the Diagnostics screen.
 
 **Section 11 of the specification is explicit: the app counts as working only
-after a test on physical devices, not after an APK is produced.** Stage 4 has
-not been run — nobody has run this on hardware yet.
+after a test on physical devices, not after an APK is produced.**
+
+What has happened on hardware so far is one preliminary run between a pair of
+phones, reported through the app's own Diagnostics screen. It got as far as
+pairing, an RFCOMM connection, an Opus handshake and about 9600 frames sent
+before the link reset, and its counters are what exposed the encoder running
+at roughly 200 kbit/s against a 32 kbit/s request. Those numbers are quoted in
+`docs/TESTING.md` and in the code comments they prompted.
+
+That is a single informal observation, not Stage 4. Device models, Android
+builds, the headset, the APK commit and a measurement method were not
+recorded, and nothing was repeated. **Stage 4 has not been run.** Treat the
+field numbers as a lead that was acted on, not as a verified result.
 
 ## Verification done so far
 

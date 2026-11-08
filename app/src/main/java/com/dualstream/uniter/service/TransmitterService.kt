@@ -469,8 +469,10 @@ class TransmitterService : Service() {
             return null
         }
         watchRecordingPolicy(mic.sessionId)
+        // reportMicRoute may raise WRONG_INPUT_ROUTE; announcing MIC on top of
+        // it would hide the failure behind a healthy-looking status.
         reportMicRoute(mic)
-        AppState.setCapture(CaptureState.MIC)
+        if (mic.routeProblem == null) AppState.setCapture(CaptureState.MIC)
         return mic
     }
 
@@ -581,6 +583,7 @@ class TransmitterService : Service() {
         var lastStateSent = CaptureState.IDLE
         var framesSinceMeter = 0
         var micSilentRun = 0
+        var idleReads = 0
 
         AppState.setTransmitting(true)
         updateNotification("Sending audio to ${link.remoteName}")
@@ -596,7 +599,14 @@ class TransmitterService : Service() {
             if (n < 0) {
                 throw IOException("capture source failed")
             }
-            if (n == 0) continue
+            if (n == 0) {
+                // A blocking source paces this loop. One that returns nothing
+                // without blocking would spin a core instead.
+                idleReads++
+                if (idleReads > IDLE_READS_BEFORE_BACKOFF) sleepQuietly(5)
+                continue
+            }
+            idleReads = 0
 
             // Silence bookkeeping. Android hands back digital silence both when
             // the playing app forbids capture and when the audio policy mutes our
@@ -696,6 +706,9 @@ class TransmitterService : Service() {
         last: CaptureState
     ): CaptureState = when {
         recorderSilencedByPolicy -> CaptureState.SILENCED_BY_POLICY
+        // A bad route stays reported until it is actually fixed; a frame of
+        // non-silent PCM is not evidence that it was.
+        last == CaptureState.WRONG_INPUT_ROUTE -> CaptureState.WRONG_INPUT_ROUTE
         src is DirectPcmInput -> CaptureState.DIRECT_PCM
         audibleRun >= 2 -> when (inputSource) {
             InputSource.BUILTIN_MIC -> CaptureState.MIC
@@ -957,6 +970,9 @@ class TransmitterService : Service() {
          * three times over is the failure the field run hit.
          */
         private const val HARD_BUDGET_MARGIN = 1.8f
+
+        /** Tolerate a short gap before assuming the source is not blocking. */
+        private const val IDLE_READS_BEFORE_BACKOFF = 3
         private const val WAKELOCK_TIMEOUT_MS = 4L * 60 * 60 * 1000
 
         /** Starts a source that needs MediaProjection consent. */

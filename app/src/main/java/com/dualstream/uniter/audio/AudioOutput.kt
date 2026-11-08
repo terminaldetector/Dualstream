@@ -95,15 +95,39 @@ class AudioOutput(
         }
     }
 
-    /** Blocking write of an interleaved stereo buffer. */
+    /**
+     * Writes a whole interleaved stereo frame, looping until it is all in.
+     *
+     * A short write is not merely a dropped tail: the tail is half of a
+     * left/right pair, so continuing from the next frame shifts every
+     * subsequent sample by one and the two channels swap. That is precisely
+     * the failure that would ruin Hard Split while looking like nothing worse
+     * than a glitch.
+     *
+     * @return samples written, or -1 if the track failed
+     */
     fun write(interleaved: ShortArray, count: Int = interleaved.size): Int {
         val t = track ?: return -1
-        return try {
-            t.write(interleaved, 0, count, AudioTrack.WRITE_BLOCKING)
-        } catch (e: Throwable) {
-            Logx.w("out", "write failed", e)
-            -1
+        var done = 0
+        while (done < count) {
+            val n = try {
+                t.write(interleaved, done, count - done, AudioTrack.WRITE_BLOCKING)
+            } catch (e: Throwable) {
+                Logx.w("out", "write failed", e)
+                return -1
+            }
+            if (n < 0) {
+                Logx.w("out", "AudioTrack.write returned $n")
+                return -1
+            }
+            if (n == 0) {
+                // Stopped or flushed underneath us; do not spin on it.
+                Logx.d("out", "write accepted nothing, giving up on this frame")
+                break
+            }
+            done += n
         }
+        return done
     }
 
     /** Estimated output latency in ms from the frames still queued in the track. */

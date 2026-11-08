@@ -130,6 +130,11 @@ class ReceiverService : Service() {
                 return START_STICKY
             }
             else -> {
+                // Android 14 requires the service to be foreground with the
+                // mediaProjection type BEFORE getMediaProjection(), so the claim
+                // has to happen here rather than inside startEverything().
+                val hasConsent = (intent?.getIntExtra(ServiceContract.EXTRA_RESULT_CODE, 0) ?: 0) != 0
+                promote("Starting…", includeProjection = hasConsent)
                 adoptProjection(intent)
                 startEverything()
             }
@@ -161,6 +166,10 @@ class ReceiverService : Service() {
                 Logx.w("receiver", "this phone's capture was stopped")
                 appAudioLocal = null
                 projection = null
+                exclusiveLocalPossible = false
+                // The silencing only existed to serve this capture. Leaving it
+                // on strands the phone mute for reasons the user cannot see.
+                restoreMediaVolume()
                 AppState.notice(
                     "Capture of this phone's audio stopped. Android needs fresh consent " +
                         "before the local channel can use it again."
@@ -320,12 +329,13 @@ class ReceiverService : Service() {
         appAudioLocal = null
         micLocalActive = prefs.micAsLocalSource
 
-        // Whatever any app on this phone is playing is the local channel, as
-        // soon as the capture consent exists. No switch: there is only one
-        // thing the user wants here, and asking about it three times over is
-        // how it ends up half configured.
+        // Capturing this phone's apps is the fallback, not the override: if the
+        // user has explicitly chosen the microphone or a track, that choice
+        // wins. Deciding the source from whether a projection token happens to
+        // exist made the microphone setting look ignored.
+        val explicitChoice = prefs.micAsLocalSource || !prefs.localSourceUri.isNullOrBlank()
         run {
-            val mp = if (exclusiveLocalPossible) projection else null
+            val mp = if (exclusiveLocalPossible && !explicitChoice) projection else null
             if (mp != null) {
                 val frameSamples = Pcm.OUT_RATE * prefs.frameMs / 1000
                 val src = AppAudioLocalSource(mp, frameSamples)
@@ -867,12 +877,12 @@ class ReceiverService : Service() {
      * claimed while this phone's own microphone feeds the mixer; claiming types
      * that are not in use is refused outright on recent Android versions.
      */
-    private fun promote(text: String): Boolean {
+    private fun promote(text: String, includeProjection: Boolean = projection != null): Boolean {
         var types = ForegroundTypes.mediaPlayback() or ForegroundTypes.connectedDevice()
         if (prefs.micAsLocalSource && hasRecordAudio()) {
             types = types or ForegroundTypes.microphone()
         }
-        if (projection != null) {
+        if (includeProjection) {
             types = types or ForegroundTypes.mediaProjection()
         }
         return ForegroundTypes.promote(

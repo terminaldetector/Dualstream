@@ -55,12 +55,20 @@ class PlaybackEngine(
     var hasLocalSource: Boolean = false
         private set
 
+    /** Sources retired by a swap, released by the audio thread between frames. */
+    private val retired = java.util.concurrent.ConcurrentLinkedQueue<LocalAudioSource>()
+
     fun setLocalSource(src: LocalAudioSource) {
         val old = localSource
         localSource = src
         hasLocalSource = src !== SilentSource
         AppState.setLocalSource(if (hasLocalSource) src.description else null)
-        if (old !== src && old !== SilentSource) old.release()
+        if (old !== src && old !== SilentSource) {
+            // Never release from the caller's thread: the audio loop may be
+            // inside old.read() right now, and releasing under it is a
+            // use-after-free that surfaces as a crash or a burst of noise.
+            if (running.get()) retired.add(old) else old.release()
+        }
         Logx.i("engine", "local source = ${src.description} (usable=$hasLocalSource)")
     }
 
@@ -102,6 +110,14 @@ class PlaybackEngine(
 
         var announcedFallback = false
         while (running.get()) {
+            // Safe point: nothing is reading a retired source here.
+            while (true) {
+                val old = retired.poll() ?: break
+                runCatching { old.release() }.onFailure {
+                    Logx.w("engine", "releasing a retired source failed", it)
+                }
+            }
+
             // Hard Split with nothing in the local channel would leave one ear
             // silent; with the link also down, both. Degrade rather than mute.
             val requested = mode
@@ -170,6 +186,10 @@ class PlaybackEngine(
         if (!running.getAndSet(false)) return
         thread?.join(1_000)
         thread = null
+        while (true) {
+            val old = retired.poll() ?: break
+            runCatching { old.release() }
+        }
         output.stop()
         jitter.flush()
         if (localSource !== SilentSource) localSource.release()

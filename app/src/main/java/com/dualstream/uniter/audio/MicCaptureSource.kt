@@ -65,6 +65,10 @@ class MicCaptureSource(
     /** Audio session id, needed to watch for the policy silencing us. */
     val sessionId: Int get() = record?.audioSessionId ?: AudioManager.AUDIO_SESSION_ID_GENERATE
 
+    private companion object {
+        const val ROUTE_RECHECK_FRAMES = 50
+    }
+
     @SuppressLint("MissingPermission")  // RECORD_AUDIO is checked before the service starts
     override fun start(): Boolean {
         if (record != null) return true
@@ -125,8 +129,24 @@ class MicCaptureSource(
                 return false
             }
             record = r
-            attachEffects(r.audioSessionId)
             verifyRoute(r)
+
+            // Fail closed. The whole point of pinning the input is that another
+            // route breaks the product: a headset microphone pulls the headset
+            // into hands-free and drops the A2DP stream, and two phones cannot
+            // share one. Reporting the problem while still streaming from the
+            // wrong input is the worst of both.
+            val type = routedType
+            if (type == null || !InputRoutePolicy.isAcceptable(type)) {
+                Logx.e(
+                    "mic",
+                    "refusing to record: route is " +
+                        (type?.let { InputRoutePolicy.describe(it) } ?: "unverified")
+                )
+                stop()
+                return false
+            }
+            attachEffects(r.audioSessionId)
             Logx.i(
                 "mic",
                 "microphone started ${sampleRate}Hz mono buffer=${bufferBytes}B " +
@@ -169,9 +189,21 @@ class MicCaptureSource(
         routeProblem?.let { Logx.w("mic", it) }
     }
 
-    /** Re-checks the route; the platform can move us while recording. */
-    fun recheckRoute() {
-        record?.let { verifyRoute(it) }
+    /**
+     * Re-checks the route and stops the source if the platform has moved it.
+     * Called from the read path, because a route change mid-recording is
+     * exactly as damaging as a wrong one at the start.
+     *
+     * @return true while the route is still acceptable
+     */
+    fun recheckRoute(): Boolean {
+        val r = record ?: return false
+        verifyRoute(r)
+        val type = routedType
+        if (type != null && InputRoutePolicy.isAcceptable(type)) return true
+        Logx.e("mic", "input moved to ${type?.let { InputRoutePolicy.describe(it) } ?: "an unverified route"}, stopping")
+        stop()
+        return false
     }
 
     private fun attachEffects(session: Int) {
@@ -197,8 +229,16 @@ class MicCaptureSource(
         )
     }
 
+    private var framesSinceRouteCheck = 0
+
     override fun read(dst: ShortArray): Int {
         val r = record ?: return -1
+        // ~1 s at 20 ms frames: cheap enough to run, often enough to catch a
+        // route change before much audio has gone the wrong way.
+        if (++framesSinceRouteCheck >= ROUTE_RECHECK_FRAMES) {
+            framesSinceRouteCheck = 0
+            if (!recheckRoute()) return -1
+        }
         val want = minOf(dst.size, frameSamples)
         var got = 0
         while (got < want) {
