@@ -13,7 +13,12 @@ import androidx.core.content.ContextCompat
 import com.dualstream.uniter.audio.AudioOutput
 import com.dualstream.uniter.audio.FileLocalSource
 import com.dualstream.uniter.audio.FrameAssembler
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
+import com.dualstream.uniter.audio.AppAudioLocalSource
 import com.dualstream.uniter.audio.InputRoutePolicy
+import com.dualstream.uniter.audio.OutputStream
+import com.dualstream.uniter.audio.SystemVolume
 import com.dualstream.uniter.audio.LocalAudioSource
 import com.dualstream.uniter.audio.MicLocalSource
 import com.dualstream.uniter.audio.Pcm
@@ -76,6 +81,12 @@ class ReceiverService : Service() {
 
     /** Non-null while this phone's own microphone is the local mixer source. */
     @Volatile private var micLocal: MicLocalSource? = null
+
+    /** Non-null while this phone's own app audio is the local mixer source. */
+    @Volatile private var appAudioLocal: AppAudioLocalSource? = null
+    private var projection: MediaProjection? = null
+    private var projectionCallback: MediaProjection.Callback? = null
+    private var systemVolume: SystemVolume? = null
     private var policyMonitor: RecordingPolicyMonitor? = null
 
     /** The mic-as-local-source setting the running engine was built with. */
@@ -91,6 +102,11 @@ class ReceiverService : Service() {
         Logx.verbose = prefs.verboseLog
         NotificationHelper.ensureChannels(this)
         audioManager = ContextCompat.getSystemService(this, AudioManager::class.java)
+        systemVolume = SystemVolume(audioManager)
+        if (prefs.savedMediaVolume > 0) {
+            Logx.w("receiver", "restoring a media volume left silenced by an earlier run")
+            restoreMediaVolume()
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -113,9 +129,49 @@ class ReceiverService : Service() {
                 applySettings()
                 return START_STICKY
             }
-            else -> startEverything()
+            else -> {
+                adoptProjection(intent)
+                startEverything()
+            }
         }
         return START_STICKY
+    }
+
+    /**
+     * Phone A needs its own MediaProjection consent to use this phone's app
+     * audio as the local channel. Without it that option simply is not
+     * available, and the rest of the receiver works as before.
+     */
+    private fun adoptProjection(intent: Intent?) {
+        if (projection != null) return
+        val code = intent?.getIntExtra(ServiceContract.EXTRA_RESULT_CODE, 0) ?: 0
+        @Suppress("DEPRECATION")
+        val data: Intent? = intent?.getParcelableExtra(ServiceContract.EXTRA_RESULT_DATA)
+        if (code == 0 || data == null) return
+
+        val mpm = ContextCompat.getSystemService(this, MediaProjectionManager::class.java)
+            ?: return
+        val mp = runCatching { mpm.getMediaProjection(code, data) }.getOrNull()
+        if (mp == null) {
+            Logx.w("receiver", "capture consent was not usable")
+            return
+        }
+        val cb = object : MediaProjection.Callback() {
+            override fun onStop() {
+                Logx.w("receiver", "this phone's capture was stopped")
+                appAudioLocal = null
+                projection = null
+                AppState.notice(
+                    "Capture of this phone's audio stopped. Android needs fresh consent " +
+                        "before the local channel can use it again."
+                )
+                engine?.setLocalSource(buildLocalSource())
+            }
+        }
+        mp.registerCallback(cb, android.os.Handler(android.os.Looper.getMainLooper()))
+        projection = mp
+        projectionCallback = cb
+        Logx.i("receiver", "capture consent accepted for this phone's app audio")
     }
 
     // ---------------------------------------------------------------- lifecycle
@@ -130,7 +186,18 @@ class ReceiverService : Service() {
         acquireWakeLock()
         registerHeadsetCallback()
 
-        val eng = PlaybackEngine(frameMs = prefs.frameMs, localSourceProvider = ::buildLocalSource)
+        val eng = PlaybackEngine(
+            frameMs = prefs.frameMs,
+            // Capturing this phone means its apps must stop reaching the
+            // headset directly, which means silencing the media volume, which
+            // only works if the mix is somewhere else.
+            outputStream = if (projection != null) {
+                OutputStream.ACCESSIBILITY
+            } else {
+                OutputStream.MEDIA
+            },
+            localSourceProvider = ::buildLocalSource
+        )
         if (!eng.start()) {
             AppState.notice("AudioTrack could not be opened. Playback is unavailable on this device.")
             AppState.setLink(LinkState.FAILED)
@@ -168,6 +235,12 @@ class ReceiverService : Service() {
         keepaliveThread = null
         engine?.stop()
         engine = null
+        restoreMediaVolume()
+        projectionCallback?.let { cb -> runCatching { projection?.unregisterCallback(cb) } }
+        projectionCallback = null
+        runCatching { projection?.stop() }
+        projection = null
+        appAudioLocal = null
         policyMonitor?.stop()
         policyMonitor = null
         micLocal = null
@@ -216,7 +289,28 @@ class ReceiverService : Service() {
      */
     private fun buildLocalSource(): LocalAudioSource {
         micLocal = null
+        appAudioLocal = null
         micLocalActive = prefs.micAsLocalSource
+
+        // Whatever any app on this phone is playing is the local channel, as
+        // soon as the capture consent exists. No switch: there is only one
+        // thing the user wants here, and asking about it three times over is
+        // how it ends up half configured.
+        run {
+            val mp = projection
+            if (mp != null) {
+                val frameSamples = Pcm.OUT_RATE * prefs.frameMs / 1000
+                val src = AppAudioLocalSource(mp, frameSamples)
+                if (src.start()) {
+                    appAudioLocal = src
+                    applyOtherAppSilencing()
+                    Logx.i("receiver", "local source is this phone's app audio")
+                    return src
+                }
+                Logx.w("receiver", "this phone's app audio could not be captured")
+                AppState.notice("This phone's app audio could not be captured.")
+            }
+        }
 
         if (prefs.micAsLocalSource) {
             if (!hasRecordAudio()) {
@@ -272,6 +366,36 @@ class ReceiverService : Service() {
             "This phone's microphone is mixed into the headset it is also feeding. Keep the " +
                 "headset away from the phone, or howl-round is likely."
         )
+    }
+
+    /**
+     * Captured apps keep playing to the headset by their own path, so without
+     * silencing them the listener hears them twice: once directly in both
+     * ears, once through the mix. The only lever is the media volume, which is
+     * why the mix has to be on another stream for this to be any use.
+     */
+    private fun applyOtherAppSilencing() {
+        val vol = systemVolume ?: return
+        val now = vol.current
+        if (now > 0) {
+            prefs.savedMediaVolume = now
+            if (vol.setFraction(0f)) {
+                Logx.i("receiver", "media volume silenced (was $now) so only the mix is heard")
+            } else {
+                prefs.savedMediaVolume = -1
+            }
+        }
+    }
+
+    private fun restoreMediaVolume() {
+        val vol = systemVolume ?: return
+        val previous = prefs.savedMediaVolume
+        if (previous <= 0) return
+        prefs.savedMediaVolume = -1
+        val max = vol.max
+        if (max > 0 && vol.setFraction(previous.toFloat() / max)) {
+            Logx.i("receiver", "media volume restored to $previous")
+        }
     }
 
     private fun watchRecordingPolicy(sessionId: Int) {
@@ -681,6 +805,9 @@ class ReceiverService : Service() {
         if (prefs.micAsLocalSource && hasRecordAudio()) {
             types = types or ForegroundTypes.microphone()
         }
+        if (projection != null) {
+            types = types or ForegroundTypes.mediaProjection()
+        }
         return ForegroundTypes.promote(
             this,
             NotificationHelper.ID_RECEIVER,
@@ -724,9 +851,16 @@ class ReceiverService : Service() {
         private const val COEXIST_UNDERRUN_LIMIT = 25
         private const val WAKELOCK_TIMEOUT_MS = 4L * 60 * 60 * 1000
 
-        fun start(context: android.content.Context) {
+        /**
+         * @param resultCode/[resultData] MediaProjection consent, so this phone
+         * can put its own app audio in the local ear. Pass 0/null to run
+         * without it; everything else still works.
+         */
+        fun start(context: android.content.Context, resultCode: Int = 0, resultData: Intent? = null) {
             val i = Intent(context, ReceiverService::class.java)
                 .setAction(ServiceContract.ACTION_START)
+                .putExtra(ServiceContract.EXTRA_RESULT_CODE, resultCode)
+                .putExtra(ServiceContract.EXTRA_RESULT_DATA, resultData)
             ContextCompat.startForegroundService(context, i)
         }
 

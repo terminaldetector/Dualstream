@@ -73,7 +73,7 @@
         <service
             android:name=".service.ReceiverService"
             android:exported="false"
-            android:foregroundServiceType="mediaPlayback|connectedDevice|microphone" />
+            android:foregroundServiceType="mediaPlayback|connectedDevice|microphone|mediaProjection" />
 
         <!-- Phone B: AudioPlaybackCapture -> encoder -> RFCOMM client -->
         <service

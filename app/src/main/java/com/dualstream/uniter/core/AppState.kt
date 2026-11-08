@@ -31,6 +31,10 @@ object AppState {
     val stats: StateFlow<StreamStats> = _stats.asStateFlow()
 
     /** Last human-readable limitation notice, e.g. coexistence problems. */
+    /** What is feeding the local mixer channel, or null when nothing is. */
+    private val _localSource = MutableStateFlow<String?>(null)
+    val localSource: StateFlow<String?> = _localSource.asStateFlow()
+
     private val _notice = MutableStateFlow<String?>(null)
     val notice: StateFlow<String?> = _notice.asStateFlow()
 
@@ -45,6 +49,7 @@ object AppState {
     fun setCapture(s: CaptureState) { _capture.value = s }
     fun setHeadset(s: HeadsetState) { _headset.value = s }
     fun setNegotiated(c: StreamConfig?) { _negotiated.value = c }
+    fun setLocalSource(desc: String?) { _localSource.value = desc }
     fun setTransmitting(v: Boolean) { _transmitting.value = v }
     fun setReceiving(v: Boolean) { _receiving.value = v }
 
@@ -61,6 +66,7 @@ object AppState {
         _link.value = LinkState.IDLE
         _capture.value = CaptureState.IDLE
         _negotiated.value = null
+        _localSource.value = null
         _transmitting.value = false
         _receiving.value = false
         resetStats()

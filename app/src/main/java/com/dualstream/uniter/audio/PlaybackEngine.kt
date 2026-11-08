@@ -15,11 +15,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class PlaybackEngine(
     private val frameMs: Int = 20,
+    outputStream: OutputStream = OutputStream.MEDIA,
     localSourceProvider: () -> LocalAudioSource = { SilentSource }
 ) {
     val frameSamples: Int = Pcm.OUT_RATE * frameMs / 1000
 
-    private val output = AudioOutput(Pcm.OUT_RATE, frameSamples)
+    private val output = AudioOutput(Pcm.OUT_RATE, frameSamples, outputStream)
     private val mixer = Mixer(frameSamples)
     val jitter = JitterBuffer(frameSamples, frameMs)
 
@@ -58,6 +59,7 @@ class PlaybackEngine(
         val old = localSource
         localSource = src
         hasLocalSource = src !== SilentSource
+        AppState.setLocalSource(if (hasLocalSource) src.description else null)
         if (old !== src && old !== SilentSource) old.release()
         Logx.i("engine", "local source = ${src.description} (usable=$hasLocalSource)")
     }

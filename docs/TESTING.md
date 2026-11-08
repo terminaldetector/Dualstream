@@ -200,6 +200,28 @@ dropped link. A measured rate far above the target means the encoder ignored
 the request; the log line `requested constant bitrate` or the warning that the
 component does not offer it says which case this device is in.
 
+## The decisive measurement: capture versus media volume
+
+Everything in "any app on either phone" rests on one unverified behaviour.
+
+With phone A capturing its own app audio, the mix on the accessibility stream
+and the media volume at zero:
+
+1. Play music in any app on phone A.
+2. Is it heard in the headset — through the mix, in the local ear only?
+3. Is it heard directly in both ears as well? It should not be.
+4. On the Diagnostics screen, is the local level meter moving?
+
+If the level meter is flat and nothing is heard, the capture tap on this
+device sits after the media volume, so silencing other apps silences the
+capture too and this phone cannot do it. Record the model. That is a platform
+property, not something to work around, and the app must then say so instead
+of offering a feature that cannot function.
+
+Repeat with the accessibility stream: on some builds it does not route to an
+A2DP headset at all, in which case nothing is heard even though the capture is
+fine. Tell the two cases apart with the level meter.
+
 ## Speaker on the sending phone
 
 Playback capture is a tap, not a redirect, so by default the captured audio

@@ -97,7 +97,9 @@ fun MainScreen(
         )
     }
     var masterVolume by remember { mutableStateOf(systemVolume.fraction) }
-    val hasLocalSource = MixerControls.hasLocalSource(prefs.localSourceUri, micAsLocal)
+    val liveLocalSource by AppState.localSource.collectAsStateWithLifecycle()
+    val hasLocalSource = liveLocalSource != null ||
+        MixerControls.hasLocalSource(prefs.localSourceUri, micAsLocal)
     var micAsLocal by remember { mutableStateOf(prefs.micAsLocalSource) }
 
     val discoverable by discovery.discoverable.collectAsStateWithLifecycle()

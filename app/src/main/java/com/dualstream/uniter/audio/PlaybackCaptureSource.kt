@@ -22,7 +22,15 @@ import com.dualstream.uniter.core.Logx
 class PlaybackCaptureSource(
     private val projection: MediaProjection,
     override val sampleRate: Int = 48_000,
-    private val frameSamples: Int = 960
+    private val frameSamples: Int = 960,
+    /**
+     * Leave this phone's own DualStream output out of the capture.
+     *
+     * On phone A the mixer both captures and plays, so without this the output
+     * is fed straight back into its own input and the loop runs away within
+     * seconds.
+     */
+    private val excludeOwnOutput: Boolean = false
 ) : CaptureSource {
 
     override val description = "system playback capture"
@@ -40,9 +48,18 @@ class PlaybackCaptureSource(
         if (record != null) return true
         return try {
             val config = AudioPlaybackCaptureConfiguration.Builder(projection)
+                // Everything the platform allows a normal app to capture. These
+                // three usages are the whole permitted set; the rest are
+                // reserved for the system, so "capture every app" means this.
                 .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
                 .addMatchingUsage(AudioAttributes.USAGE_GAME)
                 .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                .apply {
+                    if (excludeOwnOutput) {
+                        excludeUid(android.os.Process.myUid())
+                        Logx.i("capture", "excluding our own output from the capture")
+                    }
+                }
                 .build()
 
             val format = AudioFormat.Builder()

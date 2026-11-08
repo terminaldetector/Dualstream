@@ -20,8 +20,12 @@ import com.dualstream.uniter.core.MixMode
 object MixerControls {
 
     /** True when the app owns a source it can actually mix and attenuate. */
-    fun hasLocalSource(localSourceUri: String?, micAsLocalSource: Boolean): Boolean =
-        micAsLocalSource || !localSourceUri.isNullOrBlank()
+    fun hasLocalSource(
+        localSourceUri: String?,
+        micAsLocalSource: Boolean,
+        appAudioAsLocalSource: Boolean = false
+    ): Boolean =
+        appAudioAsLocalSource || micAsLocalSource || !localSourceUri.isNullOrBlank()
 
     /** Modes that are only meaningful with an app-owned local source. */
     fun modeNeedsLocalSource(mode: MixMode): Boolean = when (mode) {

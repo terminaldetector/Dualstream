@@ -12,9 +12,31 @@ import com.dualstream.uniter.core.Logx
  * specification forbids forcing Bluetooth profiles through hidden APIs, so the
  * routing decision is left to the platform.
  */
+/**
+ * Which Android stream the mixed result is played on.
+ *
+ * This is not cosmetic. Everything a normal app plays as media shares one
+ * volume with every other app's media, so there is no way to silence other
+ * apps in the headset without silencing this app too. Playing the mix on the
+ * accessibility stream separates the two: the media volume can then be taken
+ * to zero so other apps stop reaching the headset directly, while the mix —
+ * which already contains their audio, captured — stays audible on its own
+ * volume.
+ *
+ * Whether the capture survives that muting is a property of the device and has
+ * to be measured; see docs/TESTING.md. Accessibility routing is also not
+ * guaranteed on every build, which is why this stays a choice rather than the
+ * default.
+ */
+enum class OutputStream(val label: String) {
+    MEDIA("Media"),
+    ACCESSIBILITY("Accessibility")
+}
+
 class AudioOutput(
     private val sampleRate: Int = Pcm.OUT_RATE,
-    private val frameSamples: Int = 960
+    private val frameSamples: Int = 960,
+    private val stream: OutputStream = OutputStream.MEDIA
 ) {
     private var track: AudioTrack? = null
 
@@ -38,7 +60,13 @@ class AudioOutput(
             val t = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setUsage(
+                            when (stream) {
+                                OutputStream.MEDIA -> AudioAttributes.USAGE_MEDIA
+                                OutputStream.ACCESSIBILITY ->
+                                    AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY
+                            }
+                        )
                         .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                         .build()
                 )
@@ -56,7 +84,10 @@ class AudioOutput(
             t.play()
             track = t
             bufferFrames = wanted / 4
-            Logx.i("out", "AudioTrack started ${sampleRate}Hz stereo buffer=${wanted}B")
+            Logx.i(
+                "out",
+                "AudioTrack started ${sampleRate}Hz stereo buffer=${wanted}B on ${stream.label}"
+            )
             true
         } catch (t: Throwable) {
             Logx.e("out", "AudioTrack could not start", t)

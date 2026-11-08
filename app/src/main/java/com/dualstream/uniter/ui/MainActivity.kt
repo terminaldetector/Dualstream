@@ -36,6 +36,9 @@ class MainActivity : ComponentActivity() {
 
     private var pendingTransmitterPeer: String? = null
     private var pendingTransmitterSource: InputSource = InputSource.PLAYBACK_CAPTURE
+
+    /** True while the consent dialog was opened for the receiver, not the sender. */
+    private var pendingForReceiver = false
     private var permissionsGranted by mutableStateOf(false)
 
     private val permissionLauncher = registerForActivityResult(
@@ -53,6 +56,13 @@ class MainActivity : ComponentActivity() {
     private val projectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        if (pendingForReceiver) {
+            pendingForReceiver = false
+            // Consent lets phone A put whatever its own apps are playing into
+            // the local ear. Declining is fine: the receiver still runs.
+            ReceiverService.start(this, result.resultCode, result.data)
+            return@registerForActivityResult
+        }
         val peer = pendingTransmitterPeer
         val source = pendingTransmitterSource
         pendingTransmitterPeer = null
@@ -123,7 +133,17 @@ class MainActivity : ComponentActivity() {
                     },
                     permissionsGranted = permissionsGranted,
                     onRequestPermissions = { permissionLauncher.launch(requiredPermissions()) },
-                    onStartReceiver = { ReceiverService.start(this) },
+                    onStartReceiver = {
+                        val mpm = ContextCompat.getSystemService(
+                            this, MediaProjectionManager::class.java
+                        )
+                        if (mpm == null) {
+                            ReceiverService.start(this, 0, null)
+                        } else {
+                            pendingForReceiver = true
+                            projectionLauncher.launch(mpm.createScreenCaptureIntent())
+                        }
+                    },
                     onStopReceiver = { ReceiverService.send(this, ServiceContract.ACTION_STOP) },
                     onStartTransmitter = { peer, source ->
                         // Only the sources that read other apps' audio need the

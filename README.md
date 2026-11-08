@@ -114,6 +114,29 @@ service records (`fetchUuidsWithSdp`) and marks the ones that advertise the
 DualStream service, so phone A is identifiable by what it runs rather than by
 its name.
 
+### Any app on either phone
+
+Phone B sends whatever any app on it is playing; phone A does the same for the
+local ear. Both ask for capture consent when you press Start, and that is the
+only step: there are no switches for it, because the two settings it depends
+on — playing the mix on the accessibility stream and taking the media volume
+to zero — are not choices, they are what makes it work at all.
+
+Why those two: capture taps the audio, it does not take it away, so the
+captured apps keep reaching the headset by their own path and would be heard
+twice. Silencing that path means the media volume, and the media volume would
+silence this app too if the mix were on the same stream.
+
+One thing is unverified and decides whether this works on a given phone:
+**does the capture still carry audio once the media volume is zero?** That
+depends on where the platform puts the capture tap relative to the volume, it
+is not reliably documented, and it has to be measured per device. If it turns
+out to be silent, that phone cannot do this and the app has to say so rather
+than present a dead feature. See `docs/TESTING.md`.
+
+Apps that forbid playback capture are out of reach on both phones whatever
+happens; that is a platform policy, not a setting.
+
 ### Getting "phone A in the left ear, phone B in the right"
 
 That is Hard Split, and it works — with one condition: the left ear plays a
