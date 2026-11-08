@@ -174,6 +174,14 @@ package against the product's hard constraints, and boots an emulator to confirm
 the app starts — but no part of the actual bridge has been exercised on real
 hardware.
 
+## Описание для Telegram
+
+`docs/TELEGRAM.md` содержит то же самое, но так, как это читают в канале: без
+таблиц и заголовков, с учётом лимитов Telegram. Четыре варианта — описание
+канала, строка для bio, полный пост-анонс и короткий. Ограничения проекта и
+то, что мост ещё не проверен на физических телефонах, в них сказано прямо;
+при правке это нужно сохранить.
+
 ## Continuous integration
 
 `.github/workflows/android.yml` runs on every push: unit tests, lint, a debug
