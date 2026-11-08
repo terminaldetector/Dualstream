@@ -205,6 +205,19 @@ class ReceiverService : Service() {
         registerHeadsetCallback()
 
         exclusiveLocalPossible = projection != null && canSilenceMediaStream()
+        AppState.setAppAudioBlocked(
+            when {
+                exclusiveLocalPossible -> null
+                projection == null ->
+                    "Needs capture consent on this phone. Press Start receiver and accept it."
+                !SystemVolume.canMute(this) ->
+                    "Blocked: muting a stream needs Do Not Disturb access, and without it the " +
+                        "other apps on this phone keep reaching the headset in both ears."
+                else ->
+                    "Blocked: this phone refuses to mute its media volume even with Do Not " +
+                        "Disturb access, so its other apps cannot be kept out of the headset."
+            }
+        )
         if (projection != null && !exclusiveLocalPossible) {
             AppState.notice(
                 if (!SystemVolume.canMute(this))

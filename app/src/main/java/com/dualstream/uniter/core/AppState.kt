@@ -31,6 +31,16 @@ object AppState {
     val stats: StateFlow<StreamStats> = _stats.asStateFlow()
 
     /** Last human-readable limitation notice, e.g. coexistence problems. */
+    /**
+     * Why this phone's app audio cannot be used as the local channel, or null
+     * when it can. Kept separate from [notice] because it is a standing
+     * condition, not an event: a transient message about it gets overwritten
+     * by the next reconnect and the user never sees why the option does
+     * nothing.
+     */
+    private val _appAudioBlocked = MutableStateFlow<String?>(null)
+    val appAudioBlocked: StateFlow<String?> = _appAudioBlocked.asStateFlow()
+
     /** What is feeding the local mixer channel, or null when nothing is. */
     private val _localSource = MutableStateFlow<String?>(null)
     val localSource: StateFlow<String?> = _localSource.asStateFlow()
@@ -50,6 +60,7 @@ object AppState {
     fun setHeadset(s: HeadsetState) { _headset.value = s }
     fun setNegotiated(c: StreamConfig?) { _negotiated.value = c }
     fun setLocalSource(desc: String?) { _localSource.value = desc }
+    fun setAppAudioBlocked(reason: String?) { _appAudioBlocked.value = reason }
     fun setTransmitting(v: Boolean) { _transmitting.value = v }
     fun setReceiving(v: Boolean) { _receiving.value = v }
 

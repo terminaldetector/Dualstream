@@ -291,10 +291,13 @@ class OpusDecoder(
 
     override fun reset() {
         if (released) return
-        runCatching {
-            codec.flush()
-            codec.start()
-        }.onFailure { Logx.w("opus", "decoder flush failed", it) }
+        // flush() alone returns a synchronous codec to the flushed sub-state and
+        // dequeueInputBuffer resumes from there. Calling start() after it is only
+        // correct in asynchronous mode; here it threw IllegalStateException on
+        // every reconnect, so the decoder was never actually reset and carried
+        // its old state into the new stream.
+        runCatching { codec.flush() }
+            .onFailure { Logx.w("opus", "decoder flush failed", it) }
         ptsUs = 0
     }
 

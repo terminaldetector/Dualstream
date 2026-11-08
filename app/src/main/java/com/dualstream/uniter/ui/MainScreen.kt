@@ -105,6 +105,7 @@ fun MainScreen(
     // The engine reports what is really feeding the local channel, which can be
     // this phone's app audio and is therefore not derivable from settings.
     val liveLocalSource by AppState.localSource.collectAsStateWithLifecycle()
+    val appAudioBlocked by AppState.appAudioBlocked.collectAsStateWithLifecycle()
     val hasLocalSource = liveLocalSource != null ||
         MixerControls.hasLocalSource(prefs.localSourceUri, micAsLocal)
 
@@ -389,6 +390,22 @@ fun MainScreen(
                             }
                         }
                     }
+                    appAudioBlocked?.let { why ->
+                        Box(Modifier.size(8.dp))
+                        StatusRow("App audio", "unavailable", StatusColors.warn)
+                        Text(
+                            why,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                        if (!SystemVolume.canMute(context)) {
+                            Box(Modifier.size(8.dp))
+                            Button(onClick = onRequestDndAccess) {
+                                Text("Grant Do Not Disturb access")
+                            }
+                        }
+                    }
+
                     Box(Modifier.size(6.dp))
                     Text(
                         when (localMode) {
@@ -458,25 +475,36 @@ fun MainScreen(
                     }
                 }
 
-                SectionCard("Volume") {
+                SectionCard(if (mode == MixMode.STRICT_HARD_SPLIT) "Channel volume" else "Volume") {
+                    val strict = mode == MixMode.STRICT_HARD_SPLIT
                     val localLive = MixerControls.localVolumeEffective(hasLocalSource, mode)
+                    val localName = if (strict) "Left ear — this phone" else "Local source"
+                    val remoteName = if (strict) "Right ear — phone B" else "Remote phone"
+
                     Text(
-                        if (localLive) "Local source  ${(localVol * 100).toInt()} %"
-                        else "Local source — nothing to apply it to",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (localLive) MaterialTheme.colorScheme.onSurface
-                        else MaterialTheme.colorScheme.secondary
+                        "$localName  ${(localVol * 100).toInt()} %",
+                        style = MaterialTheme.typography.bodySmall
                     )
+                    // Left enabled even with no source: the level is remembered and
+                    // applies the moment one is chosen. Disabling it read as the
+                    // app not having a per-channel volume at all.
                     Slider(
                         value = localVol,
-                        enabled = localLive,
                         onValueChange = { localVol = it },
                         onValueChangeFinished = {
                             prefs.localVolume = localVol
                             onSettingsChanged()
                         }
                     )
-                    Text("Remote phone  ${(remoteVol * 100).toInt()} %",
+                    if (!localLive) {
+                        Text(
+                            "No source on this side yet, so this takes effect once one is chosen.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                    }
+                    Box(Modifier.size(8.dp))
+                    Text("$remoteName  ${(remoteVol * 100).toInt()} %",
                         style = MaterialTheme.typography.bodySmall)
                     Slider(
                         value = remoteVol,
