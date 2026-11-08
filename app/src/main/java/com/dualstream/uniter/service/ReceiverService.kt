@@ -303,6 +303,7 @@ class ReceiverService : Service() {
             acceptor = acc
             AppState.setLink(LinkState.LISTENING)
             updateNotification("Waiting for phone B")
+            warnIfInvisible(adapter)
 
             val link = try {
                 acc.accept()
@@ -559,6 +560,39 @@ class ReceiverService : Service() {
     }
 
     // ------------------------------------------------------------------ helpers
+
+    /**
+     * Listening is not the same as being findable.
+     *
+     * An RFCOMM server socket accepts connections but does nothing to the
+     * adapter's scan mode, so a phone B that has never been paired with this
+     * one cannot see it at all and the user is left watching "waiting for phone
+     * B" forever. Say so instead, but only while there is no paired peer to
+     * connect from: once bonded, phone B connects straight to the address and
+     * visibility is irrelevant.
+     */
+    private fun warnIfInvisible(adapter: BluetoothAdapter) {
+        val visible = try {
+            adapter.scanMode == BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE
+        } catch (t: SecurityException) {
+            return
+        }
+        if (visible) return
+
+        val peer = prefs.trustedPeerAddress
+        val bonded = peer != null && try {
+            adapter.bondedDevices.orEmpty().any { it.address == peer }
+        } catch (t: SecurityException) {
+            false
+        }
+        if (bonded) return
+
+        AppState.notice(
+            "This phone is listening, but it is not visible to other devices and no phone is " +
+                "paired with it yet, so phone B cannot find it. Press Make visible, then pair " +
+                "from phone B."
+        )
+    }
 
     private fun dropLink(why: String) {
         val link = currentLink ?: return

@@ -41,6 +41,9 @@ import com.dualstream.uniter.core.LinkState
 import com.dualstream.uniter.core.MixMode
 import com.dualstream.uniter.core.Prefs
 import com.dualstream.uniter.core.Role
+import com.dualstream.uniter.transport.BtDiscovery
+import com.dualstream.uniter.transport.ConnectionReadiness
+import com.dualstream.uniter.ui.theme.StatusColors
 
 /**
  * The main screen of section 8: pairing state, headset state, both volumes,
@@ -50,8 +53,10 @@ import com.dualstream.uniter.core.Role
 @Composable
 fun MainScreen(
     prefs: Prefs,
+    discovery: BtDiscovery,
     permissionsGranted: Boolean,
     onRequestPermissions: () -> Unit,
+    onRequestDiscoverable: () -> Unit,
     onStartReceiver: () -> Unit,
     onStopReceiver: () -> Unit,
     onStartTransmitter: (String, InputSource) -> Unit,
@@ -78,6 +83,24 @@ fun MainScreen(
     var remoteVol by remember { mutableStateOf(prefs.remoteVolume) }
     var inputSource by remember { mutableStateOf(prefs.inputSource) }
     var micAsLocal by remember { mutableStateOf(prefs.micAsLocalSource) }
+
+    val discoverable by discovery.discoverable.collectAsStateWithLifecycle()
+    val knownDevices by discovery.devices.collectAsStateWithLifecycle()
+
+    // Re-read on every recomposition driven by the flows above, so pairing done
+    // in the system settings shows up here without a restart.
+    val peerAddress = prefs.trustedPeerAddress
+    val peerBonded = remember(peerAddress, knownDevices, discoverable) {
+        peerAddress != null && discovery.isBonded(peerAddress)
+    }
+    val readiness = ConnectionReadiness.evaluate(
+        role = role,
+        bluetoothOn = discovery.isBluetoothOn,
+        hasPermissions = permissionsGranted,
+        discoverable = discoverable,
+        peerSelected = peerAddress != null,
+        bondedToPeer = peerBonded
+    )
 
     val active = receiving || transmitting ||
         link in setOf(LinkState.LISTENING, LinkState.CONNECTING, LinkState.CONNECTED,
@@ -168,6 +191,43 @@ fun MainScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary
                 )
+            }
+
+            // --------------------------------------------------- visibility
+            if (role == Role.RECEIVER) {
+                SectionCard("Visibility") {
+                    StatusRow(
+                        "This phone",
+                        if (discoverable) "Visible to other devices" else "Not visible",
+                        if (discoverable) StatusColors.good else StatusColors.warn
+                    )
+                    Box(Modifier.size(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = onRequestDiscoverable,
+                            enabled = permissionsGranted && discovery.isBluetoothOn
+                        ) { Text(if (discoverable) "Extend visibility" else "Make visible") }
+                    }
+                    Box(Modifier.size(6.dp))
+                    Text(
+                        if (peerBonded)
+                            "Phone B is already paired, so it can connect straight to this phone " +
+                                "and visibility is no longer needed."
+                        else
+                            "Accepting a connection does not make this phone visible. Until you turn " +
+                                "visibility on, phone B cannot find it in a Bluetooth search at all, " +
+                                "however long it looks — which is why nothing connects. Turn it on " +
+                                "here, pair from phone B, and after that this step is no longer needed.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                }
+            }
+
+            ConnectionReadiness.summary(readiness, role)?.let { next ->
+                SectionCard("Next step") {
+                    Text(next, style = MaterialTheme.typography.bodyMedium)
+                }
             }
 
             // ------------------------------------------------------- states
@@ -344,7 +404,7 @@ fun MainScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             onClick = { peerAddr?.let { onStartTransmitter(it, inputSource) } },
-                            enabled = permissionsGranted && !active && peerAddr != null
+                            enabled = permissionsGranted && !active && peerAddr != null && peerBonded
                         ) { Text("Start sending") }
                         OutlinedButton(onClick = onStopTransmitter, enabled = active) { Text("Stop") }
                     }

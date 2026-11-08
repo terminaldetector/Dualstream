@@ -21,6 +21,7 @@ fun AppNavHost(
     discovery: BtDiscovery,
     permissionsGranted: Boolean,
     onRequestPermissions: () -> Unit,
+    onRequestDiscoverable: () -> Unit,
     onStartReceiver: () -> Unit,
     onStopReceiver: () -> Unit,
     onStartTransmitter: (String, InputSource) -> Unit,
@@ -34,8 +35,10 @@ fun AppNavHost(
     when (screen) {
         Screen.MAIN -> MainScreen(
             prefs = prefs,
+            discovery = discovery,
             permissionsGranted = permissionsGranted,
             onRequestPermissions = onRequestPermissions,
+            onRequestDiscoverable = onRequestDiscoverable,
             onStartReceiver = onStartReceiver,
             onStopReceiver = onStopReceiver,
             onStartTransmitter = onStartTransmitter,
@@ -50,6 +53,7 @@ fun AppNavHost(
         Screen.DEVICES -> DeviceScreen(
             prefs = prefs,
             discovery = discovery,
+            onRequestDiscoverable = onRequestDiscoverable,
             onBack = { screen = Screen.MAIN }
         )
 

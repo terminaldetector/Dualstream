@@ -64,6 +64,25 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Android gives apps no way to become discoverable silently, so this has to
+     * go through the platform's own dialog.
+     */
+    private val discoverableLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { _ ->
+        // The result code is the granted duration, or RESULT_CANCELED. Either
+        // way the adapter's scan mode is the truth, so just re-read it.
+        discovery.refreshDiscoverable()
+        if (!discovery.discoverable.value) {
+            AppState.notice(
+                "This phone was not made visible, so phone B cannot find it to pair with."
+            )
+        } else {
+            AppState.notice(null)
+        }
+    }
+
     private val localTrackLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -92,6 +111,16 @@ class MainActivity : ComponentActivity() {
                 AppNavHost(
                     prefs = prefs,
                     discovery = discovery,
+                    onRequestDiscoverable = {
+                        runCatching { discoverableLauncher.launch(discovery.discoverableIntent()) }
+                            .onFailure {
+                                Logx.w("ui", "discoverable request failed", it)
+                                AppState.notice(
+                                    "This device has no screen for the Bluetooth visibility " +
+                                        "request; turn visibility on in the system Bluetooth settings."
+                                )
+                            }
+                    },
                     permissionsGranted = permissionsGranted,
                     onRequestPermissions = { permissionLauncher.launch(requiredPermissions()) },
                     onStartReceiver = { ReceiverService.start(this) },

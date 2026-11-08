@@ -10,8 +10,10 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.ParcelUuid
 import androidx.core.content.ContextCompat
 import com.dualstream.uniter.core.Logx
+import com.dualstream.uniter.protocol.Protocol
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -20,7 +22,15 @@ import kotlinx.coroutines.flow.asStateFlow
 data class PeerDevice(
     val name: String,
     val address: String,
-    val bonded: Boolean
+    val bonded: Boolean,
+    /** True while the system is pairing with this device. */
+    val bonding: Boolean = false,
+    /**
+     * Whether this device advertises the DualStream service record.
+     * Null means "not asked yet": the answer needs an SDP query, which costs a
+     * round trip to the device, so it is only fetched on request.
+     */
+    val runsDualStream: Boolean? = null
 )
 
 /**
@@ -43,9 +53,65 @@ class BtDiscovery(private val context: Context) {
     private val _scanning = MutableStateFlow(false)
     val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
 
+    /**
+     * Whether this phone is currently visible to other devices.
+     *
+     * This is the step whose absence makes the whole product look broken: an
+     * RFCOMM server socket does not make the adapter discoverable, so until
+     * this is true an unpaired phone B cannot see phone A at all, however long
+     * it scans.
+     */
+    private val _discoverable = MutableStateFlow(false)
+    val discoverable: StateFlow<Boolean> = _discoverable.asStateFlow()
+
     private var receiver: BroadcastReceiver? = null
 
     val isBluetoothOn: Boolean get() = adapter?.isEnabled == true
+
+    @SuppressLint("MissingPermission")
+    fun refreshDiscoverable() {
+        val a = adapter
+        _discoverable.value = try {
+            a != null && a.isEnabled &&
+                a.scanMode == BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * The system dialog that asks the user to make this phone visible. Android
+     * deliberately gives apps no way to do this silently, so the caller has to
+     * launch this and let the user agree.
+     *
+     * @param seconds requested visibility window; the platform caps it, and
+     * many builds ignore values above 300
+     */
+    fun discoverableIntent(seconds: Int = 300): Intent =
+        Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE)
+            .putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, seconds)
+
+    /**
+     * Asks [address] which Bluetooth services it offers, so the UI can mark the
+     * phone that is actually running this app instead of leaving the user to
+     * guess from a list of names.
+     *
+     * The answer arrives asynchronously in [ACTION_UUID]; this only starts the
+     * query. This is the closest a normal app can get to being "recognisable"
+     * to the other side: our own service record in SDP.
+     */
+    @SuppressLint("MissingPermission")
+    fun probeServices(address: String): Boolean {
+        val dev = deviceFor(address) ?: return false
+        if (!hasPermissions()) return false
+        return try {
+            registerReceiver()
+            dev.fetchUuidsWithSdp()
+        } catch (t: Throwable) {
+            Logx.w("discovery", "fetchUuidsWithSdp failed for $address", t)
+            false
+        }
+    }
 
     /** Permissions this build needs for discovery and RFCOMM on this API level. */
     fun requiredPermissions(): Array<String> =
@@ -64,6 +130,8 @@ class BtDiscovery(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun refreshBonded() {
+        refreshDiscoverable()
+        registerReceiver()
         val a = adapter ?: return
         if (!hasPermissions()) return
         val bonded = try {
@@ -169,7 +237,46 @@ class BtDiscovery(private val context: Context) {
                         _scanning.value = false
                         Logx.i("discovery", "discovery finished, ${_devices.value.size} devices")
                     }
-                    BluetoothDevice.ACTION_BOND_STATE_CHANGED -> refreshBonded()
+                    BluetoothDevice.ACTION_BOND_STATE_CHANGED -> {
+                        val dev: BluetoothDevice? = extraDevice(intent)
+                        val state = intent.getIntExtra(
+                            BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE
+                        )
+                        if (dev != null) {
+                            Logx.i("discovery", "bond state of ${dev.address} -> $state")
+                            update(dev.address) {
+                                it.copy(
+                                    bonded = state == BluetoothDevice.BOND_BONDED,
+                                    bonding = state == BluetoothDevice.BOND_BONDING
+                                )
+                            }
+                        }
+                        refreshBonded()
+                    }
+
+                    BluetoothAdapter.ACTION_SCAN_MODE_CHANGED -> {
+                        refreshDiscoverable()
+                        Logx.i(
+                            "discovery",
+                            "scan mode changed, discoverable=${_discoverable.value}"
+                        )
+                    }
+
+                    BluetoothDevice.ACTION_UUID -> {
+                        val dev: BluetoothDevice? = extraDevice(intent)
+                        @Suppress("DEPRECATION")
+                        val uuids = intent.getParcelableArrayExtra(BluetoothDevice.EXTRA_UUID)
+                        val found = uuids
+                            ?.filterIsInstance<ParcelUuid>()
+                            ?.any { it.uuid == Protocol.SERVICE_UUID } == true
+                        if (dev != null) {
+                            Logx.i(
+                                "discovery",
+                                "SDP of ${dev.address}: DualStream service ${if (found) "present" else "absent"}"
+                            )
+                            update(dev.address) { it.copy(runsDualStream = found) }
+                        }
+                    }
                 }
             }
         }
@@ -177,6 +284,8 @@ class BtDiscovery(private val context: Context) {
             addAction(BluetoothDevice.ACTION_FOUND)
             addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
             addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
+            addAction(BluetoothAdapter.ACTION_SCAN_MODE_CHANGED)
+            addAction(BluetoothDevice.ACTION_UUID)
         }
         ContextCompat.registerReceiver(context, r, filter, ContextCompat.RECEIVER_EXPORTED)
         receiver = r
@@ -192,12 +301,25 @@ class BtDiscovery(private val context: Context) {
         stopScan()
     }
 
+    /** Patches one entry in the list, keeping everything else as it was. */
+    private fun update(address: String, block: (PeerDevice) -> PeerDevice) {
+        _devices.value = _devices.value.map {
+            if (it.address == address) block(it) else it
+        }
+    }
+
     private fun merge(a: List<PeerDevice>, b: List<PeerDevice>): List<PeerDevice> {
         val byAddress = LinkedHashMap<String, PeerDevice>()
         for (d in a) byAddress[d.address] = d
         for (d in b) {
             val prev = byAddress[d.address]
-            byAddress[d.address] = if (prev != null && prev.bonded) prev else d
+            byAddress[d.address] = if (prev == null) d else prev.copy(
+                name = if (prev.name == prev.address) d.name else prev.name,
+                bonded = prev.bonded || d.bonded,
+                bonding = d.bonding || prev.bonding,
+                // An SDP answer is expensive to get; never drop it on a rescan.
+                runsDualStream = prev.runsDualStream ?: d.runsDualStream
+            )
         }
         return byAddress.values.sortedWith(
             compareByDescending<PeerDevice> { it.bonded }.thenBy { it.name.lowercase() }

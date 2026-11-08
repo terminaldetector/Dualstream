@@ -163,6 +163,28 @@ worthless, so discarding it is the right failure mode.
 source and a muted one is still audible, so a single check would hide the
 muting — the exact thing section 5 forbids reporting as a working stream.
 
+## Becoming findable
+
+`listenUsingRfcommWithServiceRecord` publishes the service but leaves the
+adapter's scan mode alone, so an unpaired peer cannot discover this phone.
+`BtDiscovery.discoverableIntent()` launches the platform's own confirmation
+dialog — there is no silent path, by design — and the adapter's `scanMode`,
+watched through `ACTION_SCAN_MODE_CHANGED`, is the single source of truth for
+whether the phone is visible.
+
+`ConnectionReadiness` turns the combination of adapter state, permissions,
+visibility, peer selection and bond state into the one next action, as plain
+logic with no Android dependency so it is unit-tested. It deliberately stops
+requiring visibility once the peer is bonded, because from then on phone B
+connects straight to the stored address.
+
+`fetchUuidsWithSdp` asks a device which services it offers, and the UI marks
+the ones advertising `Protocol.SERVICE_UUID`. That service record is as
+"recognisable" as a normal app can make itself: the A2DP sink role, which would
+let phone A appear as headphones in phone B's Bluetooth menu, is platform
+territory — disabled in most builds, hidden API, system permissions — and
+section 12 rules out root and HAL changes.
+
 ## What the app deliberately does not do
 
 - No `INTERNET` permission, so there is no IP path even by accident.
@@ -173,6 +195,11 @@ muting — the exact thing section 5 forbids reporting as a working stream.
 - No claim that an uncapturable app is being transmitted.
 - No recording from anything but the built-in microphone, and no SCO or call
   audio mode, so the headset is never pulled off A2DP.
+- No attempt to impersonate a Bluetooth audio sink so that phone A would appear
+  as headphones; that role is not available to an app, and faking it would need
+  exactly the system modifications section 12 forbids.
+- No silent discoverability: the visibility request goes through the platform
+  dialog.
 - No claim that a microphone muted by the audio policy is sending audio.
 - No GitHub Actions workflow and no APK build in the repository, by instruction,
   until the specification is complete and Stage 4 has been run (`docs/CI.md`).

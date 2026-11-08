@@ -88,6 +88,53 @@ feeding is a loop. The platform echo canceller is attached when available, but
 it is tuned for handset playback, not for leakage out of an earpiece, so the app
 says so rather than pretending it is solved.
 
+## Pairing: why nothing connects until phone A is made visible
+
+This is the step that is easy to miss, and without it the pair never connects.
+
+Opening an RFCOMM server socket makes the *service* available; it does **not**
+make the adapter discoverable. Until phone A is visible, a phone B that has
+never been paired with it cannot see it in a Bluetooth search at all, however
+long it scans — so no pairing happens, and phone A sits on "waiting for phone
+B" forever with nothing wrong in its own logs.
+
+Android gives apps no way to become discoverable silently, by design. So:
+
+1. On **phone A**, press **Make visible**. The system asks the user to confirm.
+2. On **phone B**, press **Scan**, then **Pair** with phone A.
+3. On **phone B**, press **Use this phone**.
+
+After that the pair is bonded and visibility is no longer needed: phone B
+connects straight to the stored address. The app tracks this and stops asking
+for visibility once a peer is paired, rather than nagging about a step that has
+already done its job.
+
+To take the guesswork out of step 2, the device list can query each device's
+service records (`fetchUuidsWithSdp`) and marks the ones that advertise the
+DualStream service, so phone A is identifiable by what it runs rather than by
+its name.
+
+### Why phone A cannot appear as actual headphones
+
+A reasonable thing to want: phone B should just see phone A in its Bluetooth
+menu as a pair of headphones and send audio there with no app involved, the way
+an app can make a phone appear as a Bluetooth keyboard.
+
+The keyboard case works because Android exposes the HID *device* role publicly,
+through `BluetoothHidDevice`. There is no equivalent for audio. Appearing as
+headphones means implementing the A2DP **sink** role, and on Android that is
+platform territory: the profile is disabled in most stock builds, and what API
+exists is hidden and gated behind system permissions. A normal app cannot
+register itself as a Bluetooth audio sink, and section 12 of the specification
+rules out the alternatives — no root, no Bluetooth Audio HAL modification.
+
+So the app does the nearest thing that is actually possible: it advertises its
+own service record over RFCOMM, which is what lets phone B recognise phone A as
+"the phone running DualStream" and connect to it. The audio then travels over
+that channel instead of over A2DP. Functionally this is what was wanted — phone
+B's audio comes out of phone A's headset — but it needs the app on both phones,
+and it cannot show up in the system Bluetooth menu as a headset.
+
 ## Honest limitations
 
 These are platform limits, not shortcuts. The specification asks for them to be
@@ -203,8 +250,10 @@ Install on both phones, then on each one pick its role on the main screen:
 
 ## Running it
 
-1. Pair the two phones with each other in the Android Bluetooth settings.
-   The RFCOMM socket is opened as a secure channel, so a system bond is required.
+1. On phone A press **Make visible**, then from phone B scan and pair with it.
+   The RFCOMM socket is opened as a secure channel, so a system bond is
+   required, and phone A has to be discoverable for that first pairing. See
+   "Pairing" above — this is the step whose absence makes nothing connect.
 2. Pair the headset **with phone A only**.
 3. Phone A: role A, grant *Nearby devices* and microphone, press **Start receiver**.
 4. Phone B: role B, open **Devices**, select phone A, press **Start sending**
