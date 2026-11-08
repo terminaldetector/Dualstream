@@ -176,6 +176,14 @@ class ReceiverService : Service() {
 
     // ---------------------------------------------------------------- lifecycle
 
+    /**
+     * True when this phone can both capture its own apps and stop them
+     * reaching the headset directly. Without the second half the first is
+     * worse than useless: the audio is heard twice and the channel split is
+     * drowned out.
+     */
+    @Volatile private var exclusiveLocalPossible = false
+
     private fun startEverything() {
         promote("Waiting for phone B")
         if (running.getAndSet(true)) {
@@ -186,12 +194,26 @@ class ReceiverService : Service() {
         acquireWakeLock()
         registerHeadsetCallback()
 
+        exclusiveLocalPossible = projection != null && canSilenceMediaStream()
+        if (projection != null && !exclusiveLocalPossible) {
+            AppState.notice(
+                "This phone does not let the app change its media volume, so audio from its " +
+                    "other apps cannot be kept out of the headset and would be heard in both " +
+                    "ears regardless of the channel mode. The local ear therefore uses a track " +
+                    "or the microphone instead. Phone B is unaffected."
+            )
+        }
+        Logx.i("receiver", "exclusive local channel possible: $exclusiveLocalPossible")
+
         val eng = PlaybackEngine(
             frameMs = prefs.frameMs,
             // Capturing this phone means its apps must stop reaching the
             // headset directly, which means silencing the media volume, which
             // only works if the mix is somewhere else.
-            outputStream = if (projection != null) {
+            // Only leave the media stream when the other apps on it are
+            // actually being silenced. Otherwise this just moves our own output
+            // somewhere that may not reach the headset at all.
+            outputStream = if (exclusiveLocalPossible) {
                 OutputStream.ACCESSIBILITY
             } else {
                 OutputStream.MEDIA
@@ -297,7 +319,7 @@ class ReceiverService : Service() {
         // thing the user wants here, and asking about it three times over is
         // how it ends up half configured.
         run {
-            val mp = projection
+            val mp = if (exclusiveLocalPossible) projection else null
             if (mp != null) {
                 val frameSamples = Pcm.OUT_RATE * prefs.frameMs / 1000
                 val src = AppAudioLocalSource(mp, frameSamples)
@@ -374,6 +396,41 @@ class ReceiverService : Service() {
      * ears, once through the mix. The only lever is the media volume, which is
      * why the mix has to be on another stream for this to be any use.
      */
+    /**
+     * Can this phone's media stream actually be silenced by this app?
+     *
+     * Everything about using phone A's own app audio rests on it. Those apps
+     * reach the headset by their own path, and if that path cannot be silenced
+     * they are heard at full volume in both ears no matter what the mixer
+     * does — the routing is simply bypassed, which is exactly how it sounded
+     * in the field: the local side blasting into both channels whatever the
+     * settings said.
+     *
+     * Several builds refuse a background volume change outright, so asking is
+     * not enough: the value is set, read back, and put straight back. A
+     * refusal here is a fact about the device, and the app has to act on it
+     * rather than carry on and leave both the routing and the volume broken.
+     */
+    private fun canSilenceMediaStream(): Boolean {
+        val vol = systemVolume ?: return false
+        val max = vol.max
+        if (max <= 0) return false
+        val before = vol.current
+        if (before == 0) return true
+
+        if (!vol.setFraction(0f)) {
+            Logx.w("receiver", "this phone refuses media volume changes from the app")
+            return false
+        }
+        val achieved = vol.current == 0
+        // Never leave it silenced by a probe.
+        vol.setFraction(before.toFloat() / max)
+        if (!achieved) {
+            Logx.w("receiver", "media volume did not reach zero; it is not ours to control")
+        }
+        return achieved
+    }
+
     private fun applyOtherAppSilencing() {
         val vol = systemVolume ?: return
         val now = vol.current
