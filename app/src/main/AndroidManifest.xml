@@ -34,6 +34,13 @@
     <!-- ===== Audio ===== -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!--
+        Setting a stream to zero is a mute, and Android treats a mute as a Do
+        Not Disturb change: without policy access setStreamVolume is refused.
+        That refusal is what stopped phone A's other apps from being kept out
+        of the headset. The user grants this in system settings.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
     <!-- ===== Foreground services ===== -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

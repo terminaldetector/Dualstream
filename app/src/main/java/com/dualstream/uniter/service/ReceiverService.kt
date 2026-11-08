@@ -197,10 +197,16 @@ class ReceiverService : Service() {
         exclusiveLocalPossible = projection != null && canSilenceMediaStream()
         if (projection != null && !exclusiveLocalPossible) {
             AppState.notice(
-                "This phone does not let the app change its media volume, so audio from its " +
-                    "other apps cannot be kept out of the headset and would be heard in both " +
-                    "ears regardless of the channel mode. The local ear therefore uses a track " +
-                    "or the microphone instead. Phone B is unaffected."
+                if (!SystemVolume.canMute(this))
+                    "To keep this phone's other apps out of the headset their volume has to be " +
+                        "muted, and Android counts a mute as a Do Not Disturb change. Grant " +
+                        "Do Not Disturb access to this app, then start the receiver again. " +
+                        "Until then the local ear uses a track or the microphone."
+                else
+                    "This phone does not let the app change its media volume even with Do Not " +
+                        "Disturb access, so its other apps cannot be kept out of the headset. " +
+                        "The local ear uses a track or the microphone instead. Phone B is " +
+                        "unaffected."
             )
         }
         Logx.i("receiver", "exclusive local channel possible: $exclusiveLocalPossible")
@@ -419,7 +425,11 @@ class ReceiverService : Service() {
         if (before == 0) return true
 
         if (!vol.setFraction(0f)) {
-            Logx.w("receiver", "this phone refuses media volume changes from the app")
+            Logx.w(
+                "receiver",
+                "media volume change refused; Do Not Disturb access granted=" +
+                    SystemVolume.canMute(this)
+            )
             return false
         }
         val achieved = vol.current == 0

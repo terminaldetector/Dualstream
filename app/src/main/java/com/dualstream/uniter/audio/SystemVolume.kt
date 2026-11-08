@@ -1,5 +1,7 @@
 package com.dualstream.uniter.audio
 
+import android.app.NotificationManager
+import android.content.Context
 import android.media.AudioManager
 import com.dualstream.uniter.core.Logx
 
@@ -58,4 +60,29 @@ class SystemVolume(private val audioManager: AudioManager?) {
 
     /** True when the device reports no media stream at all. */
     val unavailable: Boolean get() = max <= 0
+
+    companion object {
+        /**
+         * Whether this app may mute a stream.
+         *
+         * Taking a stream to zero is a mute, and Android routes mutes through
+         * Do Not Disturb policy. Without this access `setStreamVolume(0)` is
+         * refused — silently on some builds — so the one lever that keeps other
+         * apps out of the headset does nothing. The user grants it in system
+         * settings; there is no way to request it in a dialog.
+         */
+        fun canMute(context: Context): Boolean = try {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            nm?.isNotificationPolicyAccessGranted == true
+        } catch (t: Throwable) {
+            Logx.w("volume", "could not read notification policy access", t)
+            false
+        }
+
+        /** The settings screen where the user grants it. */
+        fun policyAccessIntent(): android.content.Intent =
+            android.content.Intent(
+                android.provider.Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS
+            )
+    }
 }

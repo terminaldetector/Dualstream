@@ -13,6 +13,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import com.dualstream.uniter.audio.SystemVolume
 import com.dualstream.uniter.core.AppState
 import com.dualstream.uniter.core.CaptureState
 import com.dualstream.uniter.core.InputSource
@@ -121,6 +122,18 @@ class MainActivity : ComponentActivity() {
                 AppNavHost(
                     prefs = prefs,
                     discovery = discovery,
+                    onRequestDndAccess = {
+                        // There is no dialog for this one: policy access is
+                        // granted in system settings or not at all.
+                        runCatching { startActivity(SystemVolume.policyAccessIntent()) }
+                            .onFailure {
+                                Logx.w("ui", "no Do Not Disturb settings screen", it)
+                                AppState.notice(
+                                    "This device has no Do Not Disturb access screen, so other " +
+                                        "apps cannot be kept out of the headset on it."
+                                )
+                            }
+                    },
                     onRequestDiscoverable = {
                         runCatching { discoverableLauncher.launch(discovery.discoverableIntent()) }
                             .onFailure {

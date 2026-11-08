@@ -60,6 +60,7 @@ fun MainScreen(
     permissionsGranted: Boolean,
     onRequestPermissions: () -> Unit,
     onRequestDiscoverable: () -> Unit,
+    onRequestDndAccess: () -> Unit,
     onStartReceiver: () -> Unit,
     onStopReceiver: () -> Unit,
     onStartTransmitter: (String, InputSource) -> Unit,
@@ -212,6 +213,25 @@ fun MainScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary
                 )
+            }
+
+            // Capturing this phone's apps is only useful if their own path to
+            // the headset can be silenced, and muting a stream needs this.
+            if (role == Role.RECEIVER && !SystemVolume.canMute(context)) {
+                SectionCard("Other apps on this phone") {
+                    Text(
+                        "To put any app from this phone in one ear only, its own sound has to " +
+                            "be kept out of the headset. That means muting the media volume, " +
+                            "and Android counts a mute as a Do Not Disturb change, so it needs " +
+                            "that access. Without it the local ear can only play a track or " +
+                            "the microphone.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Box(Modifier.size(8.dp))
+                    Button(onClick = onRequestDndAccess) {
+                        Text("Grant Do Not Disturb access")
+                    }
+                }
             }
 
             // --------------------------------------------------- visibility
