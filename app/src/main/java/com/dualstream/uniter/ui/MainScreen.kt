@@ -82,6 +82,7 @@ fun MainScreen(
     var localVol by remember { mutableStateOf(prefs.localVolume) }
     var remoteVol by remember { mutableStateOf(prefs.remoteVolume) }
     var inputSource by remember { mutableStateOf(prefs.inputSource) }
+    var muteSpeaker by remember { mutableStateOf(prefs.muteLocalSpeaker) }
     var micAsLocal by remember { mutableStateOf(prefs.micAsLocalSource) }
 
     val discoverable by discovery.discoverable.collectAsStateWithLifecycle()
@@ -372,6 +373,37 @@ fun MainScreen(
                     Box(Modifier.size(6.dp))
                     Text(
                         sourceHint(inputSource),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                }
+
+                SectionCard("This phone's speaker") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Silence it while sending",
+                            Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Switch(
+                            checked = muteSpeaker,
+                            enabled = !active,
+                            onCheckedChange = {
+                                muteSpeaker = it
+                                prefs.muteLocalSpeaker = it
+                            }
+                        )
+                    }
+                    Box(Modifier.size(6.dp))
+                    Text(
+                        "Capturing app audio taps the mix; it does not take the sound away from " +
+                            "this phone, so what is captured also keeps playing out of its own " +
+                            "speaker. Android gives an app no way to redirect or mute another " +
+                            "app's output, so the only lever is this phone's media volume, which " +
+                            "this turns to zero while sending and restores afterwards.\n\n" +
+                            "Whether the other phone still hears the audio with this on depends " +
+                            "on where the capture tap sits relative to the volume on your device. " +
+                            "Check it on your hardware before relying on it.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.secondary
                     )

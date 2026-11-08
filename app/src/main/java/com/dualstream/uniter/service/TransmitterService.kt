@@ -19,10 +19,12 @@ import com.dualstream.uniter.audio.MicCaptureSource
 import com.dualstream.uniter.audio.MixCaptureSource
 import com.dualstream.uniter.audio.Pcm
 import com.dualstream.uniter.audio.PlaybackCaptureSource
+import com.dualstream.uniter.audio.RateMeter
 import com.dualstream.uniter.audio.RecordingPolicyMonitor
 import com.dualstream.uniter.audio.Resampler
 import com.dualstream.uniter.audio.ToneSource
 import com.dualstream.uniter.codec.AudioEncoder
+import com.dualstream.uniter.codec.BitrateController
 import com.dualstream.uniter.codec.CodecFactory
 import com.dualstream.uniter.core.AppState
 import com.dualstream.uniter.core.CaptureState
@@ -75,9 +77,19 @@ class TransmitterService : Service() {
 
     /** Set by the policy monitor when Android mutes our recorder. */
     @Volatile private var recorderSilencedByPolicy = false
+    @Volatile private var projectionStartedAt = 0L
+
+    /** Media volume before we silenced it, so it can be put back. */
+    private var volumeBeforeMute: Int? = null
 
     /** Non-null only while the "app audio + microphone" source is running. */
     @Volatile private var mixSource: MixCaptureSource? = null
+
+    private val rateMeter = RateMeter()
+    private var bitrate: BitrateController? = null
+
+    /** Frames thrown away rather than pushed into an already overloaded link. */
+    @Volatile private var droppedToBudget = 0L
 
     /** Set by the receiver through a CONFIG frame; applied on the next restart. */
     @Volatile private var requestedBitrate: Int? = null
@@ -93,6 +105,10 @@ class TransmitterService : Service() {
         NotificationHelper.ensureChannels(this)
         discovery = BtDiscovery(this)
         audioManager = ContextCompat.getSystemService(this, AudioManager::class.java)
+        // A field report of "it drops after a few minutes" is impossible to tell
+        // from "the system restarted the service" without saying so in the log.
+        starts++
+        Logx.i("tx", "service created (start #$starts)")
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -211,7 +227,11 @@ class TransmitterService : Service() {
         }
         val cb = object : MediaProjection.Callback() {
             override fun onStop() {
-                Logx.i("tx", "MediaProjection stopped by the system or the user")
+                Logx.w(
+                    "tx",
+                    "MediaProjection stopped by the system or the user after " +
+                        "${(System.currentTimeMillis() - projectionStartedAt) / 1000}s"
+                )
                 AppState.setCapture(CaptureState.NEEDS_CONSENT)
                 AppState.notice("Capture stopped. Android requires fresh consent before it can resume.")
                 // Explicitly do NOT try to re-acquire: that needs a user gesture.
@@ -221,6 +241,7 @@ class TransmitterService : Service() {
         }
         mp.registerCallback(cb, Handler(Looper.getMainLooper()))
         projection = mp
+        projectionStartedAt = System.currentTimeMillis()
         projectionCallback = cb
         return true
     }
@@ -228,6 +249,7 @@ class TransmitterService : Service() {
     private fun startEverything() {
         if (running.getAndSet(true)) return
         AppState.resetStats()
+        if (prefs.muteLocalSpeaker) muteLocalSpeaker()
         acquireWakeLock()
         connectThread = Thread(::connectLoop, "dualstream-connect").apply { start() }
     }
@@ -246,6 +268,7 @@ class TransmitterService : Service() {
         projectionCallback = null
         runCatching { projection?.stop() }
         projection = null
+        restoreLocalSpeaker()
         discovery?.release()
         releaseWakeLock()
         AppState.reset()
@@ -319,6 +342,12 @@ class TransmitterService : Service() {
                 runStream(link)
             } catch (t: Throwable) {
                 Logx.w("tx", "stream ended: ${t.javaClass.simpleName}: ${t.message}")
+                bitrate?.let { ladder ->
+                    if (ladder.update(0, 0, -1, linkFailed = true)) {
+                        Logx.i("tx", "after the drop, bitrate -> ${ladder.current}")
+                        requestedBitrate = ladder.current
+                    }
+                }
             } finally {
                 stopCaptureAndEncoder()
                 currentLink?.close()
@@ -343,7 +372,11 @@ class TransmitterService : Service() {
         AppState.setLink(LinkState.HANDSHAKING)
 
         val base = prefs.snapshotStreamConfig()
-        val config = requestedBitrate?.let { base.copy(bitrate = it) } ?: base
+        val ladder = bitrate ?: BitrateController(ceilingBps = base.bitrate).also { bitrate = it }
+        if (prefs.powerSave) ladder.forceLowest()
+        val config = base.copy(bitrate = requestedBitrate ?: ladder.current)
+        rateMeter.reset()
+        droppedToBudget = 0
 
         val enc = CodecFactory.createEncoder(config)
         encoder = enc
@@ -609,7 +642,13 @@ class TransmitterService : Service() {
                     Logx.i("tx", "CODEC_INIT sent (${enc.initData.size} buffers)")
                 }
                 for (p in packets) {
-                    sendAudio(link, p, silent)
+                    val wire = p.size + AudioPayload.HEADER + Protocol.HEADER_SIZE
+                    // Each packet covers the frame that produced it; when the
+                    // encoder emits several per frame they share that audio.
+                    val samplesPerPacket = enc.frameSamples / packets.size.coerceAtLeast(1)
+                    if (policeRate(wire, samplesPerPacket, enc.sampleRate)) {
+                        sendAudio(link, p, silent)
+                    }
                 }
             }
             if (consumed > 0) {
@@ -660,6 +699,77 @@ class TransmitterService : Service() {
         }
         silentRun > SILENCE_FRAMES -> CaptureState.CAPTURING_SILENCE
         else -> last
+    }
+
+    /**
+     * Measures the stream and keeps it inside its budget.
+     *
+     * The first field run sent ~200 kbit/s from a 32 kbit/s request and the
+     * link died; nothing in the app noticed, because nothing was measuring. So
+     * every packet is now accounted for, the ladder reacts to what is actually
+     * produced, and when the encoder still will not comply the frames are
+     * dropped here rather than pushed into a socket that cannot carry them.
+     * Dropping audio is bad; burying the link until it resets is worse, and it
+     * takes the latency with it.
+     *
+     * @return true when this packet should be sent
+     */
+    private fun policeRate(packetBytes: Int, audioSamples: Int, sampleRate: Int): Boolean {
+        val ladder = bitrate ?: return true
+        val now = System.currentTimeMillis()
+        if (rateMeter.record(now, packetBytes, audioSamples, sampleRate)) {
+            val before = ladder.current
+            val changed = ladder.update(
+                measuredBps = rateMeter.bitsPerSecond,
+                underrunsDelta = 0,
+                rttMs = AppState.stats.value.rttMs,
+                linkFailed = false
+            )
+            AppState.updateStats {
+                it.copy(
+                    sendBitsPerSecond = rateMeter.bitsPerSecond,
+                    packetsPerSecond = rateMeter.packetsPerSecond,
+                    realtimeRatio = rateMeter.realtimeRatio,
+                    targetBitrate = ladder.current,
+                    bitrateReason = ladder.lastReason,
+                    droppedToBudget = droppedToBudget,
+                    activePlayers = countActivePlayers()
+                )
+            }
+            if (changed) {
+                Logx.i(
+                    "tx",
+                    "bitrate ${before} -> ${ladder.current} (${ladder.lastReason}); " +
+                        "measured ${rateMeter.bitsPerSecond / 1000}kbit/s, " +
+                        "${rateMeter.packetsPerSecond}pkt/s, " +
+                        "realtime x${"%.2f".format(rateMeter.realtimeRatio)}"
+                )
+                // Ask the encoder for the new rate; it restarts the stream if it
+                // cannot change live.
+                requestedBitrate = ladder.current
+                if (encoder?.setBitrate(ladder.current) != true) {
+                    dropLink("bitrate change to ${ladder.current}")
+                }
+            }
+        }
+
+        // Hard ceiling, independent of the ladder: never exceed the budget by
+        // more than this, whatever the encoder is doing.
+        val ceiling = (ladder.current * HARD_BUDGET_MARGIN).toInt()
+        if (rateMeter.windowsCompleted > 0 && rateMeter.bitsPerSecond > ceiling) {
+            droppedToBudget++
+            // Drop one in two while over budget, so the stream degrades rather
+            // than stops.
+            return droppedToBudget % 2 == 0L
+        }
+        return true
+    }
+
+    /** How many players Android currently reports on this phone. */
+    private fun countActivePlayers(): Int = try {
+        audioManager?.activePlaybackConfigurations?.size ?: 0
+    } catch (t: Throwable) {
+        0
     }
 
     private fun sendAudio(link: BtLink, packet: ByteArray, silent: Boolean) {
@@ -739,6 +849,46 @@ class TransmitterService : Service() {
         link.close()
     }
 
+    /**
+     * Playback capture taps the mix; it does not take the audio away from this
+     * phone, so whatever is being captured still comes out of its speaker.
+     * Android offers an app no way to redirect or mute another app's output,
+     * so the only thing in reach is this phone's own media volume.
+     *
+     * Whether the remote side keeps hearing the audio afterwards depends on
+     * where the capture tap sits relative to this attenuation, and that varies
+     * between devices. It has to be checked on the actual hardware rather than
+     * assumed, which is why this is a setting and not silent behaviour.
+     */
+    private fun muteLocalSpeaker() {
+        val am = audioManager ?: return
+        runCatching {
+            val stream = AudioManager.STREAM_MUSIC
+            val now = am.getStreamVolume(stream)
+            if (now > 0) {
+                volumeBeforeMute = now
+                am.setStreamVolume(stream, 0, 0)
+                Logx.i("tx", "media volume silenced (was $now)")
+            }
+        }.onFailure {
+            Logx.w("tx", "could not silence the media volume", it)
+            AppState.notice(
+                "This phone's media volume could not be silenced automatically. Turn it down " +
+                    "by hand if the sound should not come out of this phone as well."
+            )
+        }
+    }
+
+    private fun restoreLocalSpeaker() {
+        val am = audioManager ?: return
+        val previous = volumeBeforeMute ?: return
+        volumeBeforeMute = null
+        runCatching {
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, previous, 0)
+            Logx.i("tx", "media volume restored to $previous")
+        }.onFailure { Logx.w("tx", "could not restore the media volume", it) }
+    }
+
     private fun acquireWakeLock() {
         if (wakeLock != null) return
         val pm = ContextCompat.getSystemService(this, PowerManager::class.java) ?: return
@@ -782,12 +932,22 @@ class TransmitterService : Service() {
     }
 
     companion object {
+        /** How many times this process has created the service. */
+        @Volatile private var starts = 0
+
         /** ~1 s of silence at 20 ms frames before we call the stream silent. */
         private const val SILENCE_FRAMES = 50
         private const val METER_EVERY = 5
 
         /** ~4 s at 20 ms frames before we point out a dead microphone half. */
         private const val MIC_SILENT_WARN_FRAMES = 200
+
+        /**
+         * How far over the chosen bitrate the stream may run before frames are
+         * dropped outright. Some headroom is normal for a variable-rate codec;
+         * three times over is the failure the field run hit.
+         */
+        private const val HARD_BUDGET_MARGIN = 1.8f
         private const val WAKELOCK_TIMEOUT_MS = 4L * 60 * 60 * 1000
 
         /** Starts a source that needs MediaProjection consent. */

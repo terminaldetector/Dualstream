@@ -88,5 +88,25 @@ data class StreamStats(
     val localLevel: Float = 0f,
     val remoteLevel: Float = 0f,
     val duckGain: Float = 1f,
-    val connectedSinceMs: Long = 0
+    val connectedSinceMs: Long = 0,
+
+    /** What the encoder is really putting on the wire, measured. */
+    val sendBitsPerSecond: Int = 0,
+    val packetsPerSecond: Int = 0,
+
+    /**
+     * Audio seconds produced per wall-clock second. Above 1 means a backlog is
+     * building, which is how latency grows without anything looking broken.
+     */
+    val realtimeRatio: Float = 0f,
+
+    /** Bitrate the adaptive controller has settled on, and why it last moved. */
+    val targetBitrate: Int = 0,
+    val bitrateReason: String? = null,
+
+    /** Frames dropped on the sending side to stay inside the bitrate budget. */
+    val droppedToBudget: Long = 0,
+
+    /** How many players Android reports as active on this phone. */
+    val activePlayers: Int = 0
 )

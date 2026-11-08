@@ -1,6 +1,7 @@
 package com.dualstream.uniter.codec
 
 import android.media.MediaCodec
+import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import com.dualstream.uniter.core.CodecId
@@ -98,9 +99,31 @@ class OpusEncoder(
                     setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, frameSamples * 2 * 4)
                     // The frame duration is decided by feeding exactly one frame per
                     // input buffer; vendors disagree about the format hints for it.
+
+                    // The first field run produced ~200 kbit/s from a 32 kbit/s
+                    // request, which RFCOMM beside an A2DP headset cannot carry.
+                    // A constant-bitrate request is the one lever MediaCodec
+                    // offers against that, so take it where the component says
+                    // it is supported rather than setting it blind.
+                    if (supportsCbr(name)) {
+                        setInteger(
+                            MediaFormat.KEY_BITRATE_MODE,
+                            MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+                        )
+                        Logx.i("opus", "requested constant bitrate")
+                    } else {
+                        Logx.w(
+                            "opus",
+                            "$name does not offer constant bitrate; the stream may exceed " +
+                                "${bitrate}bps and will be policed by the rate meter"
+                        )
+                    }
                 }
                 mc.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 mc.start()
+                // What the component actually accepted, which is not always what
+                // was asked for.
+                runCatching { Logx.i("opus", "negotiated input format: " + mc.inputFormat) }
             }
         } catch (t: Throwable) {
             throw CodecUnavailableException("Opus encoder could not start", t)
@@ -175,6 +198,19 @@ class OpusEncoder(
 
     private companion object {
         const val FEED_TIMEOUT_US = 10_000L
+
+        /** Whether this component advertises constant-bitrate encoding. */
+        fun supportsCbr(codecName: String): Boolean = try {
+            MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+                .firstOrNull { it.name == codecName }
+                ?.getCapabilitiesForType(OpusSupport.MIME)
+                ?.encoderCapabilities
+                ?.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+                ?: false
+        } catch (t: Throwable) {
+            Logx.w("opus", "could not read encoder capabilities", t)
+            false
+        }
     }
 }
 

@@ -177,6 +177,41 @@ processing on and off (Settings → Microphone), and whether the automatic gain
 control makes it worse. This is acoustics, not a bug, but the usable distance is
 worth writing down.
 
+## Bitrate reality check
+
+The first run on hardware sent roughly 200 kbit/s from a 32 kbit/s request:
+the platform Opus encoder emitted far more, far smaller packets than the frame
+size it was fed, and the link died about a minute in. The app now measures
+this, so it is a reading rather than a guess.
+
+On the Diagnostics screen while sending, record:
+
+| Reading | What it should say |
+|---|---|
+| Measured send rate | within about 1.5x of the target bitrate |
+| Audio per second of clock | close to x1.00 |
+| Target bitrate | where the adaptive ladder settled |
+| Dropped to stay in budget | 0, or rising only during trouble |
+| Last rate change | why the ladder last moved |
+
+A ratio above x1 means the encoder is producing audio faster than real time,
+which builds a backlog and shows up as growing delay before it shows up as a
+dropped link. A measured rate far above the target means the encoder ignored
+the request; the log line `requested constant bitrate` or the warning that the
+component does not offer it says which case this device is in.
+
+## Speaker on the sending phone
+
+Playback capture is a tap, not a redirect, so by default the captured audio
+keeps coming out of the sending phone as well. Settings offers "Silence it
+while sending", which turns this phone's media volume to zero.
+
+What has to be checked on the actual device: **with the media volume at zero,
+does the receiving phone still hear the audio?** Whether the capture tap sits
+before or after that attenuation is device-dependent and is not documented
+reliably. Record the answer per phone model — if the remote goes silent too,
+the setting is useless on that device and the user has to be told so.
+
 ## Coexistence check (section 7)
 
 Some phones cannot run an RFCOMM link and an A2DP stream at once without

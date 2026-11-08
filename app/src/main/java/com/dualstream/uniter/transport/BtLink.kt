@@ -92,11 +92,26 @@ class RfcommAcceptor(private val adapter: BluetoothAdapter) : Closeable {
 /**
  * Transmitter side (phone B): connects to the service record on phone A.
  */
-class RfcommConnector(private val device: BluetoothDevice) {
+class RfcommConnector(
+    private val device: BluetoothDevice,
+    private val adapter: BluetoothAdapter? = null
+) {
 
     @SuppressLint("MissingPermission")
     @Throws(IOException::class)
     fun connect(): BtLink {
+        // Discovery and connecting contend for the radio, and Android's own
+        // documentation says to cancel discovery first. Leaving a scan running
+        // is a classic cause of connect failing with "read failed, socket might
+        // closed or timeout, read ret: -1" — which is exactly what the field
+        // log showed on every reconnect attempt.
+        runCatching {
+            if (adapter?.isDiscovering == true) {
+                Logx.i("connect", "cancelling discovery before connecting")
+                adapter.cancelDiscovery()
+            }
+        }.onFailure { Logx.w("connect", "cancelDiscovery failed", it) }
+
         val sock = device.createRfcommSocketToServiceRecord(Protocol.SERVICE_UUID)
         try {
             sock.connect()

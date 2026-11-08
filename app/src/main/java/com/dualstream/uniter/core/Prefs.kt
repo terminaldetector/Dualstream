@@ -114,6 +114,18 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(K_MIC_FX, true)
         set(v) = sp.edit().putBoolean(K_MIC_FX, v).apply()
 
+    /**
+     * Silence this phone's own speaker while it is sending.
+     *
+     * Playback capture is a tap, not a redirect: the app being captured keeps
+     * playing out of this phone as well, which is why the sound is heard in
+     * both places. Android gives no way to redirect or silence another app's
+     * output, so the only lever available is this phone's media volume.
+     */
+    var muteLocalSpeaker: Boolean
+        get() = sp.getBoolean(K_MUTE_SPEAKER, false)
+        set(v) = sp.edit().putBoolean(K_MUTE_SPEAKER, v).apply()
+
     /** Optional content URI of the app-managed local source used by HARD_SPLIT. */
     var localSourceUri: String?
         get() = sp.getString(K_LOCAL_URI, null)
@@ -148,5 +160,6 @@ class Prefs(context: Context) {
         const val K_MIC_LOCAL = "mic_local"
         const val K_MIC_GAIN = "mic_gain"
         const val K_MIC_FX = "mic_fx"
+        const val K_MUTE_SPEAKER = "mute_speaker"
     }
 }

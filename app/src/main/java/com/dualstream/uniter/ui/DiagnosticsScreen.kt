@@ -70,6 +70,23 @@ fun DiagnosticsScreen(onBack: () -> Unit) {
                 KeyValue("Dropped to cut latency", stats.dropped.toString())
                 KeyValue("Lost per sequence", stats.lost.toString())
                 KeyValue("Buffer", "${stats.bufferMs} ms")
+                KeyValue(
+                    "Measured send rate",
+                    if (stats.sendBitsPerSecond > 0)
+                        "${stats.sendBitsPerSecond / 1000} kbit/s · ${stats.packetsPerSecond} pkt/s"
+                    else "—"
+                )
+                KeyValue(
+                    "Target bitrate",
+                    if (stats.targetBitrate > 0) "${stats.targetBitrate / 1000} kbit/s" else "—"
+                )
+                KeyValue(
+                    "Audio per second of clock",
+                    if (stats.realtimeRatio > 0f) "x%.2f".format(stats.realtimeRatio) else "—"
+                )
+                KeyValue("Dropped to stay in budget", stats.droppedToBudget.toString())
+                KeyValue("Players active on this phone", stats.activePlayers.toString())
+                stats.bitrateReason?.let { KeyValue("Last rate change", it) }
                 KeyValue("Round trip", if (stats.rttMs >= 0) "${stats.rttMs} ms" else "—")
                 val uptime = if (stats.connectedSinceMs > 0)
                     (System.currentTimeMillis() - stats.connectedSinceMs) / 1000 else 0
