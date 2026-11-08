@@ -97,10 +97,13 @@ fun MainScreen(
         )
     }
     var masterVolume by remember { mutableStateOf(systemVolume.fraction) }
+    var micAsLocal by remember { mutableStateOf(prefs.micAsLocalSource) }
+
+    // The engine reports what is really feeding the local channel, which can be
+    // this phone's app audio and is therefore not derivable from settings.
     val liveLocalSource by AppState.localSource.collectAsStateWithLifecycle()
     val hasLocalSource = liveLocalSource != null ||
         MixerControls.hasLocalSource(prefs.localSourceUri, micAsLocal)
-    var micAsLocal by remember { mutableStateOf(prefs.micAsLocalSource) }
 
     val discoverable by discovery.discoverable.collectAsStateWithLifecycle()
     val knownDevices by discovery.devices.collectAsStateWithLifecycle()

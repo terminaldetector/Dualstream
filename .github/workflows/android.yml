@@ -56,7 +56,19 @@ jobs:
         run: python3 scripts/check_apk.py --self-test
 
       - name: Run unit tests
-        run: ./gradlew :app:testDebugUnitTest
+        shell: bash
+        run: |
+          set -o pipefail
+          ./gradlew :app:testDebugUnitTest 2>&1 | tee "$RUNNER_TEMP/gradle.log"
+
+      # Kotlin prints its errors early in the build output, where Gradle's own
+      # post-action logging then buries them. Repeat them at the end.
+      - name: Show compiler errors
+        if: failure()
+        shell: bash
+        run: |
+          echo '--- compiler diagnostics ---'
+          grep -E '^(e|w): ' "$RUNNER_TEMP/gradle.log" | head -60 || echo '(none found)'
 
       - name: Upload test report
         if: always()
@@ -150,7 +162,17 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Assemble debug APK
-        run: ./gradlew :app:assembleDebug
+        shell: bash
+        run: |
+          set -o pipefail
+          ./gradlew :app:assembleDebug 2>&1 | tee "$RUNNER_TEMP/gradle.log"
+
+      - name: Show compiler errors
+        if: failure()
+        shell: bash
+        run: |
+          echo '--- compiler diagnostics ---'
+          grep -E '^(e|w): ' "$RUNNER_TEMP/gradle.log" | head -60 || echo '(none found)'
 
       - name: Check the package against the specification
         run: python3 scripts/check_apk.py app/build/outputs/apk/debug/app-debug.apk
