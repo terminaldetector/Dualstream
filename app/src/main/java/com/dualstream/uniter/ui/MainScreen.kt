@@ -38,6 +38,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dualstream.uniter.core.AppState
 import com.dualstream.uniter.core.CaptureState
 import com.dualstream.uniter.core.InputSource
+import com.dualstream.uniter.core.LocalInputMode
 import com.dualstream.uniter.core.LinkState
 import com.dualstream.uniter.core.MixMode
 import com.dualstream.uniter.core.Prefs
@@ -99,6 +100,7 @@ fun MainScreen(
     }
     var masterVolume by remember { mutableStateOf(systemVolume.fraction) }
     var micAsLocal by remember { mutableStateOf(prefs.micAsLocalSource) }
+    var localMode by remember { mutableStateOf(prefs.localInputMode) }
 
     // The engine reports what is really feeding the local channel, which can be
     // this phone's app audio and is therefore not derivable from settings.
@@ -335,6 +337,73 @@ fun MainScreen(
                             "taking the headset's microphone would switch it to hands-free and kill " +
                             "the A2DP stream, and two phones cannot share one headset microphone — " +
                             "the system would cut the input on both.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                }
+
+                if (mode == MixMode.STRICT_HARD_SPLIT) {
+                    SectionCard("Channels") {
+                        StatusRow(
+                            "Left — this phone",
+                            liveLocalSource ?: "silent (no source)",
+                            if (liveLocalSource != null) StatusColors.good else StatusColors.warn
+                        )
+                        StatusRow(
+                            "Right — phone B",
+                            if (link == LinkState.CONNECTED) "receiving" else "silent (no link)",
+                            if (link == LinkState.CONNECTED) StatusColors.good else StatusColors.warn
+                        )
+                        Box(Modifier.size(6.dp))
+                        Text(
+                            "Each ear carries one phone and nothing else. If one side has no " +
+                                "source it stays silent; the other keeps playing. Nothing is " +
+                                "ever copied across.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                    }
+                }
+
+                SectionCard("Left ear source") {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        LocalInputMode.entries.chunked(2).forEach { pair ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                pair.forEach { m ->
+                                    FilterChip(
+                                        selected = localMode == m,
+                                        onClick = {
+                                            localMode = m
+                                            prefs.localInputMode = m
+                                            micAsLocal = m == LocalInputMode.BUILTIN_MIC
+                                            if (m == LocalInputMode.FILE_OR_TONE &&
+                                                prefs.localSourceUri.isNullOrBlank()
+                                            ) {
+                                                onPickLocalTrack()
+                                            }
+                                            onSettingsChanged()
+                                        },
+                                        label = { Text(m.label) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Box(Modifier.size(6.dp))
+                    Text(
+                        when (localMode) {
+                            LocalInputMode.APP_AUDIO ->
+                                "Whatever any app on this phone is playing. Needs capture consent, " +
+                                    "and needs their own path to the headset to be silenced — if " +
+                                    "this phone will not allow that, the app says so instead of " +
+                                    "putting them in both ears."
+                            LocalInputMode.BUILTIN_MIC ->
+                                "This phone's built-in microphone. Never the headset's."
+                            LocalInputMode.FILE_OR_TONE ->
+                                "A track chosen in this app, or the test tone."
+                            LocalInputMode.NONE ->
+                                "Nothing. In Strict Split the left ear stays silent."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.secondary
                     )

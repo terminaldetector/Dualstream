@@ -44,10 +44,14 @@ class Mixer(private val frameSamples: Int) {
             MixMode.PRIORITY -> localVolume * duckGain
             else -> localVolume
         }
+        // No ducking in strict mode: the two sides are independent by contract.
         val rGain = remoteVolume
 
-        val panL = if (balance > 0f) 1f - balance else 1f
-        val panR = if (balance < 0f) 1f + balance else 1f
+        // Strict Split is a routing contract, not a mix: anything that can move
+        // energy between the channels is bypassed, balance included.
+        val strict = mode == MixMode.STRICT_HARD_SPLIT
+        val panL = if (!strict && balance > 0f) 1f - balance else 1f
+        val panR = if (!strict && balance < 0f) 1f + balance else 1f
 
         for (i in 0 until frameSamples) {
             val lv = sampleAt(local, i, lGain)
@@ -56,8 +60,11 @@ class Mixer(private val frameSamples: Int) {
             var leftOut: Int
             var rightOut: Int
             when (mode) {
-                MixMode.HARD_SPLIT -> {
-                    // Left ear carries the local source, right ear the remote phone.
+                MixMode.HARD_SPLIT,
+                MixMode.STRICT_HARD_SPLIT -> {
+                    // Left ear carries the local source, right ear the remote
+                    // phone. A missing source contributes zeros to its own
+                    // channel only; sampleAt never borrows from the other side.
                     leftOut = lv
                     rightOut = rv
                 }

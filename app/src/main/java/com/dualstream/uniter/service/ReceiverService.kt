@@ -34,6 +34,7 @@ import com.dualstream.uniter.core.AppState
 import com.dualstream.uniter.core.CaptureState
 import com.dualstream.uniter.core.HeadsetState
 import com.dualstream.uniter.core.LinkState
+import com.dualstream.uniter.core.LocalInputMode
 import com.dualstream.uniter.core.Logx
 import com.dualstream.uniter.core.MixMode
 import com.dualstream.uniter.core.Prefs
@@ -329,28 +330,41 @@ class ReceiverService : Service() {
         appAudioLocal = null
         micLocalActive = prefs.micAsLocalSource
 
-        // Capturing this phone's apps is the fallback, not the override: if the
-        // user has explicitly chosen the microphone or a track, that choice
-        // wins. Deciding the source from whether a projection token happens to
-        // exist made the microphone setting look ignored.
-        val explicitChoice = prefs.micAsLocalSource || !prefs.localSourceUri.isNullOrBlank()
-        run {
-            val mp = if (exclusiveLocalPossible && !explicitChoice) projection else null
-            if (mp != null) {
-                val frameSamples = Pcm.OUT_RATE * prefs.frameMs / 1000
-                val src = AppAudioLocalSource(mp, frameSamples)
-                if (src.start()) {
-                    appAudioLocal = src
-                    applyOtherAppSilencing()
-                    Logx.i("receiver", "local source is this phone's app audio")
-                    return src
-                }
-                Logx.w("receiver", "this phone's app audio could not be captured")
-                AppState.notice("This phone's app audio could not be captured.")
+        // One explicit choice decides this. Deriving it from whichever
+        // capability happened to be available is what made the microphone
+        // setting look ignored.
+        val mode = prefs.localInputMode
+        Logx.i("receiver", "local input mode = $mode")
+
+        if (mode == LocalInputMode.NONE) return SilentSource
+
+        if (mode == LocalInputMode.APP_AUDIO) {
+            val mp = if (exclusiveLocalPossible) projection else null
+            if (mp == null) {
+                AppState.notice(
+                    if (projection == null)
+                        "App audio needs capture consent on this phone. Press Start receiver " +
+                            "again and accept the prompt."
+                    else
+                        "App audio cannot be isolated on this phone, so it would be heard in " +
+                            "both ears instead of one. Choose the microphone or a track instead."
+                )
+                return SilentSource
             }
+            val frameSamples = Pcm.OUT_RATE * prefs.frameMs / 1000
+            val src = AppAudioLocalSource(mp, frameSamples)
+            if (src.start()) {
+                appAudioLocal = src
+                applyOtherAppSilencing()
+                Logx.i("receiver", "local source is this phone's app audio")
+                return src
+            }
+            Logx.w("receiver", "this phone's app audio could not be captured")
+            AppState.notice("This phone's app audio could not be captured.")
+            return SilentSource
         }
 
-        if (prefs.micAsLocalSource) {
+        if (mode == LocalInputMode.BUILTIN_MIC) {
             if (!hasRecordAudio()) {
                 AppState.notice("Microphone permission is required to use this phone's microphone.")
                 micLocalActive = false
@@ -372,7 +386,10 @@ class ReceiverService : Service() {
                 return mic
             }
             Logx.w("receiver", "local microphone could not start")
-            AppState.notice("This phone's microphone could not be opened. Another app may hold it.")
+            AppState.notice(
+                "This phone's microphone could not be opened, or it was routed somewhere other " +
+                    "than the built-in microphone. The left ear is silent."
+            )
             micLocalActive = false
             return SilentSource
         }

@@ -137,6 +137,25 @@ than present a dead feature. See `docs/TESTING.md`.
 Apps that forbid playback capture are out of reach on both phones whatever
 happens; that is a platform policy, not a setting.
 
+### Strict Split
+
+`Strict Split` is the routing contract, separate from `Hard Split`:
+
+- left ear is this phone and nothing else, right ear is phone B and nothing else;
+- no cross-feed, no balance, no ducking;
+- **no fallback.** A missing source silences its own ear and leaves the other
+  running. Hard Split degrades to Remote Only when there is no local source,
+  which is friendlier but changes what the mode means; Strict Split does not.
+
+The left ear's source is an explicit choice — app audio, the built-in
+microphone, a track, or nothing — rather than being inferred from whichever
+capability happened to be available. That inference is what previously made the
+microphone setting look ignored.
+
+Twelve unit tests assert the contract on the produced PCM rather than on the
+mode that was requested, because every way this has gone wrong so far has been
+a silent substitution somewhere in between.
+
 ### Getting "phone A in the left ear, phone B in the right"
 
 That is Hard Split, and it works — with one condition: the left ear plays a

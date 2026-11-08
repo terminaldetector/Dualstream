@@ -100,6 +100,29 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(K_MIC_LOCAL, false)
         set(v) = sp.edit().putBoolean(K_MIC_LOCAL, v).apply()
 
+    /**
+     * Which source feeds this phone's own ear. Explicit, so that having a
+     * capture token can no longer silently override a chosen microphone.
+     *
+     * Migrates from the older separate flags the first time it is read.
+     */
+    var localInputMode: LocalInputMode
+        get() {
+            sp.getString(K_LOCAL_MODE, null)?.let { stored ->
+                runCatching { return LocalInputMode.valueOf(stored) }
+            }
+            return when {
+                micAsLocalSource -> LocalInputMode.BUILTIN_MIC
+                !localSourceUri.isNullOrBlank() -> LocalInputMode.FILE_OR_TONE
+                else -> LocalInputMode.NONE
+            }
+        }
+        set(v) {
+            sp.edit().putString(K_LOCAL_MODE, v.name).apply()
+            // Keep the older flags consistent so nothing reads a stale value.
+            micAsLocalSource = v == LocalInputMode.BUILTIN_MIC
+        }
+
     /** Linear gain applied to microphone input, 0f..4f. */
     var micGain: Float
         get() = sp.getFloat(K_MIC_GAIN, 1.0f)
@@ -170,6 +193,7 @@ class Prefs(context: Context) {
         const val K_MIC_GAIN = "mic_gain"
         const val K_MIC_FX = "mic_fx"
         const val K_MUTE_SPEAKER = "mute_speaker"
+        const val K_LOCAL_MODE = "local_input_mode"
         const val K_SAVED_VOLUME = "saved_media_volume"
     }
 }

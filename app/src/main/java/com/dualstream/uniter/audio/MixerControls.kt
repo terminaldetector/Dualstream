@@ -31,6 +31,9 @@ object MixerControls {
     fun modeNeedsLocalSource(mode: MixMode): Boolean = when (mode) {
         MixMode.HARD_SPLIT, MixMode.PRIORITY -> true
         MixMode.MIXED_STEREO -> true
+        // Strict Split works without one; that ear is simply silent, which is
+        // the defined behaviour rather than a fault to warn about.
+        MixMode.STRICT_HARD_SPLIT -> false
         MixMode.REMOTE_ONLY -> false
     }
 
@@ -48,8 +51,15 @@ object MixerControls {
      * but the interface has to say it is happening, or the fallback becomes
      * the next thing that looks broken.
      */
-    fun effectiveMode(mode: MixMode, hasLocalSource: Boolean): MixMode =
-        if (!hasLocalSource && mode != MixMode.REMOTE_ONLY) MixMode.REMOTE_ONLY else mode
+    fun effectiveMode(mode: MixMode, hasLocalSource: Boolean): MixMode = when {
+        // Strict Split means what it says. Silence on one side is the correct
+        // result when that side has no source, and quietly turning it into
+        // Remote Only would put phone B in both ears — the opposite of the
+        // contract the mode exists to keep.
+        mode == MixMode.STRICT_HARD_SPLIT -> mode
+        !hasLocalSource && mode != MixMode.REMOTE_ONLY -> MixMode.REMOTE_ONLY
+        else -> mode
+    }
 
     /** True when [effectiveMode] is quietly overriding what the user picked. */
     fun isFallingBack(mode: MixMode, hasLocalSource: Boolean): Boolean =
@@ -64,6 +74,10 @@ object MixerControls {
      */
     fun explain(mode: MixMode, hasLocalSource: Boolean): String? = when {
         hasLocalSource -> null
+
+        mode == MixMode.STRICT_HARD_SPLIT ->
+            "No source for this phone, so the left ear is silent and only phone B is heard, " +
+                "on the right. Strict Split never copies one phone into the other's ear."
 
         mode == MixMode.REMOTE_ONLY ->
             "Only phone B is played, so no local source is needed."

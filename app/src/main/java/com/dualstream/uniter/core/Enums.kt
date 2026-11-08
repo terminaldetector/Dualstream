@@ -14,6 +14,18 @@ enum class MixMode(val label: String) {
     /** Left ear = local (app-managed) source, right ear = remote phone. */
     HARD_SPLIT("Hard Split"),
 
+    /**
+     * Left ear is phone A and nothing else; right ear is phone B and nothing
+     * else. No cross-feed, no balance, no ducking, and above all no fallback:
+     * a missing source silences its own channel and leaves the other running.
+     *
+     * Separate from [HARD_SPLIT] on purpose. Hard Split degrades to Remote Only
+     * when there is no local source, which is friendlier but changes what the
+     * mode means; here the contract is that each ear carries exactly one
+     * device, and silence is the correct answer when that device has nothing.
+     */
+    STRICT_HARD_SPLIT("Strict Split"),
+
     /** Both sources summed into both ears. */
     MIXED_STEREO("Mixed Stereo"),
 
@@ -80,6 +92,27 @@ enum class CaptureState {
      * pulls it into the hands-free profile and takes A2DP down with it.
      */
     WRONG_INPUT_ROUTE
+}
+
+/**
+ * Which source feeds phone A's own ear.
+ *
+ * An explicit choice, because deriving it from whichever capability happened
+ * to be available made the microphone setting look ignored: a projection token
+ * existing was enough to override it.
+ */
+enum class LocalInputMode(val label: String) {
+    /** Whatever any app on this phone is playing, via MediaProjection. */
+    APP_AUDIO("App audio"),
+
+    /** This phone's built-in microphone, pinned to the built-in device. */
+    BUILTIN_MIC("Microphone"),
+
+    /** A track chosen in the app, or the built-in test tone. */
+    FILE_OR_TONE("Track"),
+
+    /** Nothing: this phone contributes silence to its ear. */
+    NONE("None")
 }
 
 /**
