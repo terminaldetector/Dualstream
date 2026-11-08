@@ -109,6 +109,11 @@ class TransmitterService : Service() {
         // from "the system restarted the service" without saying so in the log.
         starts++
         Logx.i("tx", "service created (start #$starts)")
+        // A previous run may have been killed while the speaker was silenced.
+        if (prefs.savedMediaVolume > 0) {
+            Logx.w("tx", "restoring a media volume left silenced by an earlier run")
+            restoreLocalSpeaker()
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -867,6 +872,7 @@ class TransmitterService : Service() {
             val now = am.getStreamVolume(stream)
             if (now > 0) {
                 volumeBeforeMute = now
+                prefs.savedMediaVolume = now
                 am.setStreamVolume(stream, 0, 0)
                 Logx.i("tx", "media volume silenced (was $now)")
             }
@@ -881,8 +887,11 @@ class TransmitterService : Service() {
 
     private fun restoreLocalSpeaker() {
         val am = audioManager ?: return
-        val previous = volumeBeforeMute ?: return
+        // Prefer the persisted value: if the process was killed while muted,
+        // the in-memory one is gone and the phone would stay silent for good.
+        val previous = volumeBeforeMute ?: prefs.savedMediaVolume.takeIf { it > 0 } ?: return
         volumeBeforeMute = null
+        prefs.savedMediaVolume = -1
         runCatching {
             am.setStreamVolume(AudioManager.STREAM_MUSIC, previous, 0)
             Logx.i("tx", "media volume restored to $previous")

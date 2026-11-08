@@ -45,6 +45,7 @@ fun AppNavHost(
             onStopTransmitter = onStopTransmitter,
             onReconnect = onReconnect,
             onSettingsChanged = onSettingsChanged,
+            onPickLocalTrack = onPickLocalTrack,
             onOpenDevices = { screen = Screen.DEVICES },
             onOpenSettings = { screen = Screen.SETTINGS },
             onOpenDiagnostics = { screen = Screen.DIAGNOSTICS }

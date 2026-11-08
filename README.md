@@ -114,6 +114,41 @@ service records (`fetchUuidsWithSdp`) and marks the ones that advertise the
 DualStream service, so phone A is identifiable by what it runs rather than by
 its name.
 
+### Getting "phone A in the left ear, phone B in the right"
+
+That is Hard Split, and it works — with one condition: the left ear plays a
+source **this app owns**, not whatever another app on phone A happens to be
+playing. Pick a track in Settings, or turn on phone A's microphone, and Hard
+Split puts it in one ear with phone B in the other.
+
+Without a local source the left channel has nothing in it. The app used to
+play silence there, so half the headset went dead and, if the link to phone B
+was also down, all of it did — which looks exactly like the app muting
+everything. It now falls back to playing phone B in both ears and says that it
+is doing so, with one-tap buttons to pick a track or switch the microphone on.
+
+### What phone A's controls can and cannot reach
+
+Phone A's mixer sees exactly two things: the stream decoded from phone B, and
+a source this app owns — a track it decodes itself, or its own microphone.
+
+Audio that **any other app on phone A is playing** goes straight to the A2DP
+headset without passing through this process, and no public API lets an app
+intercept, re-route or attenuate another app's output. So the local volume
+slider and the channel modes have nothing to apply to unless a local source is
+selected, and the app now says so instead of presenting live-looking controls
+that do nothing.
+
+The one control that does reach everything in the headset is Android's media
+volume, so the main screen offers it directly. For the same reason it moves
+this app's own output along with everything else: the per-source sliders set
+the balance inside the mix, the media volume sets how loud the result is.
+
+Capturing phone A's own app audio and re-mixing it does not solve this. The
+capture is a tap, not a redirect, so the original keeps playing to the headset
+and the listener hears it twice; silencing it means turning the media volume
+down, which silences this app's output too, because both use the music stream.
+
 ### Why phone A cannot appear as actual headphones
 
 A reasonable thing to want: phone B should just see phone A in its Bluetooth

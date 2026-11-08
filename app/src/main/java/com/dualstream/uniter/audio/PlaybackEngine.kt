@@ -49,17 +49,23 @@ class PlaybackEngine(
         get() = mixer.duckDepth
         set(v) { mixer.duckDepth = v.coerceIn(0f, 1f) }
 
+    /** False when nothing is feeding the local channel, so the mixer can adapt. */
+    @Volatile
+    var hasLocalSource: Boolean = false
+        private set
+
     fun setLocalSource(src: LocalAudioSource) {
         val old = localSource
         localSource = src
+        hasLocalSource = src !== SilentSource
         if (old !== src && old !== SilentSource) old.release()
-        Logx.i("engine", "local source = ${src.description}")
+        Logx.i("engine", "local source = ${src.description} (usable=$hasLocalSource)")
     }
 
     fun start(): Boolean {
         if (running.get()) return true
         if (!output.start()) return false
-        localSource = provider()
+        setLocalSource(provider())
         running.set(true)
         thread = Thread({ loop() }, "dualstream-playback").apply {
             priority = Thread.MAX_PRIORITY
@@ -92,12 +98,32 @@ class PlaybackEngine(
             Logx.w("engine", "could not raise thread priority", t)
         }
 
+        var announcedFallback = false
         while (running.get()) {
+            // Hard Split with nothing in the local channel would leave one ear
+            // silent; with the link also down, both. Degrade rather than mute.
+            val requested = mode
+            val effective = MixerControls.effectiveMode(requested, hasLocalSource)
+            if (effective != requested && !announcedFallback) {
+                announcedFallback = true
+                Logx.i(
+                    "engine",
+                    "no local source, playing ${requested.label} as ${effective.label}"
+                )
+                AppState.notice(
+                    "No local source is selected, so ${requested.label} would leave one ear " +
+                        "silent. Playing phone B in both ears instead. Pick a track or turn on " +
+                        "this phone's microphone to use ${requested.label}."
+                )
+            } else if (effective == requested && announcedFallback) {
+                announcedFallback = false
+            }
+
             val remote = jitter.pop() ?: jitter.lastGoodTail()
             if (remote == null) cleanFrames = 0 else cleanFrames++
             jitter.maybeRelax(cleanFrames)
 
-            val localCount = if (mode == MixMode.REMOTE_ONLY) {
+            val localCount = if (effective == MixMode.REMOTE_ONLY) {
                 0
             } else {
                 runCatching { localSource.read(localBuf) }.getOrElse {
@@ -110,7 +136,7 @@ class PlaybackEngine(
             }
             val local = if (localCount > 0) localBuf else null
 
-            val stereo = mixer.mix(local, remote, mode)
+            val stereo = mixer.mix(local, remote, effective)
             val written = output.write(stereo, stereo.size)
             if (written > 0) output.noteWritten(written)
             if (written < 0) {

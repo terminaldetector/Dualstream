@@ -126,6 +126,15 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(K_MUTE_SPEAKER, false)
         set(v) = sp.edit().putBoolean(K_MUTE_SPEAKER, v).apply()
 
+    /**
+     * Media volume saved before the app silenced it, so it can be restored even
+     * if the process is killed in between. Without this a killed transmitter
+     * would leave the phone permanently mute with no clue why. -1 = nothing saved.
+     */
+    var savedMediaVolume: Int
+        get() = sp.getInt(K_SAVED_VOLUME, -1)
+        set(v) = sp.edit().putInt(K_SAVED_VOLUME, v).apply()
+
     /** Optional content URI of the app-managed local source used by HARD_SPLIT. */
     var localSourceUri: String?
         get() = sp.getString(K_LOCAL_URI, null)
@@ -161,5 +170,6 @@ class Prefs(context: Context) {
         const val K_MIC_GAIN = "mic_gain"
         const val K_MIC_FX = "mic_fx"
         const val K_MUTE_SPEAKER = "mute_speaker"
+        const val K_SAVED_VOLUME = "saved_media_volume"
     }
 }

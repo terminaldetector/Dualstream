@@ -32,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dualstream.uniter.core.AppState
@@ -41,6 +42,8 @@ import com.dualstream.uniter.core.LinkState
 import com.dualstream.uniter.core.MixMode
 import com.dualstream.uniter.core.Prefs
 import com.dualstream.uniter.core.Role
+import com.dualstream.uniter.audio.MixerControls
+import com.dualstream.uniter.audio.SystemVolume
 import com.dualstream.uniter.transport.BtDiscovery
 import com.dualstream.uniter.transport.ConnectionReadiness
 import com.dualstream.uniter.ui.theme.StatusColors
@@ -63,6 +66,7 @@ fun MainScreen(
     onStopTransmitter: () -> Unit,
     onReconnect: () -> Unit,
     onSettingsChanged: () -> Unit,
+    onPickLocalTrack: () -> Unit,
     onOpenDevices: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenDiagnostics: () -> Unit
@@ -83,6 +87,17 @@ fun MainScreen(
     var remoteVol by remember { mutableStateOf(prefs.remoteVolume) }
     var inputSource by remember { mutableStateOf(prefs.inputSource) }
     var muteSpeaker by remember { mutableStateOf(prefs.muteLocalSpeaker) }
+
+    val context = LocalContext.current
+    val systemVolume = remember {
+        SystemVolume(
+            androidx.core.content.ContextCompat.getSystemService(
+                context, android.media.AudioManager::class.java
+            )
+        )
+    }
+    var masterVolume by remember { mutableStateOf(systemVolume.fraction) }
+    val hasLocalSource = MixerControls.hasLocalSource(prefs.localSourceUri, micAsLocal)
     var micAsLocal by remember { mutableStateOf(prefs.micAsLocalSource) }
 
     val discoverable by discovery.discoverable.collectAsStateWithLifecycle()
@@ -324,13 +339,43 @@ fun MainScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.secondary
                     )
+                    if (MixerControls.modeNeedsLocalSource(mode) && !hasLocalSource) {
+                        Box(Modifier.size(6.dp))
+                        StatusRow("Local source", "none selected", StatusColors.warn)
+                        Text(
+                            "${mode.label} needs a source this app owns for the other ear. " +
+                                "Until one is chosen, phone B is played in both ears instead of " +
+                                "leaving one side silent.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                        Box(Modifier.size(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = onPickLocalTrack) { Text("Pick a track") }
+                            OutlinedButton(
+                                enabled = permissionsGranted,
+                                onClick = {
+                                    micAsLocal = true
+                                    prefs.micAsLocalSource = true
+                                    onSettingsChanged()
+                                }
+                            ) { Text("Use microphone") }
+                        }
+                    }
                 }
 
                 SectionCard("Volume") {
-                    Text("Local source  ${(localVol * 100).toInt()} %",
-                        style = MaterialTheme.typography.bodySmall)
+                    val localLive = MixerControls.localVolumeEffective(hasLocalSource, mode)
+                    Text(
+                        if (localLive) "Local source  ${(localVol * 100).toInt()} %"
+                        else "Local source — nothing to apply it to",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (localLive) MaterialTheme.colorScheme.onSurface
+                        else MaterialTheme.colorScheme.secondary
+                    )
                     Slider(
                         value = localVol,
+                        enabled = localLive,
                         onValueChange = { localVol = it },
                         onValueChangeFinished = {
                             prefs.localVolume = localVol
@@ -347,6 +392,48 @@ fun MainScreen(
                             onSettingsChanged()
                         }
                     )
+
+                    MixerControls.explain(mode, hasLocalSource)?.let { why ->
+                        Box(Modifier.size(6.dp))
+                        Text(
+                            why,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                    }
+                }
+
+                SectionCard("Headset volume") {
+                    if (systemVolume.unavailable) {
+                        Text(
+                            "This device reports no media volume to control.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    } else {
+                        Text(
+                            "System media volume  ${(masterVolume * 100).toInt()} %",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Slider(
+                            value = masterVolume,
+                            onValueChange = { masterVolume = it },
+                            onValueChangeFinished = {
+                                if (!systemVolume.setFraction(masterVolume)) {
+                                    AppState.notice(
+                                        "Android refused the volume change. Do Not Disturb may " +
+                                            "own the media stream on this phone."
+                                    )
+                                }
+                                masterVolume = systemVolume.fraction
+                            }
+                        )
+                        Box(Modifier.size(6.dp))
+                        Text(
+                            MixerControls.SYSTEM_VOLUME_NOTE,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                    }
                 }
             }
 
